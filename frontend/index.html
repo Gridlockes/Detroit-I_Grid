@@ -1,31 +1,156 @@
 <!DOCTYPE html>
 <!--
   Detroit I-Grid — frontend/index.html
-  MapLibre GL + deck.gl: animated traffic simulation viewer.
+  MapLibre GL JS + deck.gl (CDN) traffic simulation viewer.
 
-  TODO (prompt 5): full implementation — TripsLayer, PathLayer,
-  baseline/scenario toggle, time slider, metrics panel, dark theme.
+  Layers
+  ──────
+    PathLayer   — road segments coloured green→amber→red by V/C density
+    TripsLayer  — animated vehicle trails (peak-hour)
+
+  Controls
+  ────────
+    Baseline / Scenario toggle  — switch between simulation states
+    Time scrub slider           — manually step through the peak hour
+    Animation speed slider      — ×10 … ×120 sim-time / real-second
+    Poll indicator              — live dot shows connection state
+
+  Data
+  ────
+    Polls GET /results/latest every 3 s.
+    API base can be overridden with ?api=<url> for local dev.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Detroit I-Grid</title>
-  <style>
-    body { margin: 0; background: #111; color: #eee; font-family: sans-serif; }
-    #map { width: 100vw; height: 100vh; }
-    #placeholder {
-      position: absolute; top: 50%; left: 50%;
-      transform: translate(-50%, -50%);
-      text-align: center; opacity: 0.5;
-    }
-  </style>
+
+  <!-- MapLibre GL JS -->
+  <link  rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.1.3/dist/maplibre-gl.css" />
+  <script src="https://unpkg.com/maplibre-gl@4.1.3/dist/maplibre-gl.js"></script>
+
+  <!-- deck.gl (standalone UMD — exposes window.deck) -->
+  <script src="https://unpkg.com/deck.gl@9.0.11/dist.min.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+
+  <!-- ── Map ──────────────────────────────────────────────────────── -->
   <div id="map"></div>
-  <div id="placeholder">
-    <h2>Detroit I-Grid</h2>
-    <p>Map viewer — implement in prompt 5</p>
-  </div>
+
+  <!-- ── Side panel ───────────────────────────────────────────────── -->
+  <aside id="panel">
+
+    <div id="panel-header">
+      <h1>Detroit I-Grid</h1>
+      <p>AI-powered development impact simulator</p>
+    </div>
+
+    <div id="panel-body">
+
+      <!-- Mode toggle -->
+      <div class="card">
+        <h3>Simulation Mode</h3>
+        <div id="mode-toggle">
+          <button class="active" data-mode="baseline">Baseline</button>
+          <button data-mode="scenario">Scenario</button>
+        </div>
+      </div>
+
+      <!-- Animation controls -->
+      <div class="card">
+        <h3>Animation</h3>
+
+        <div id="slider-wrap">
+          <label>
+            <span>Peak hour time</span>
+            <span id="time-label">07:00</span>
+          </label>
+          <input id="time-slider" type="range" min="0" max="3600" value="0" step="1" />
+        </div>
+
+        <div id="speed-wrap" style="margin-top:10px;">
+          <span>Speed</span>
+          <input id="speed-range" type="range" min="10" max="180" value="60" step="10" />
+          <span id="speed-label">60×</span>
+        </div>
+      </div>
+
+      <!-- Impact metrics -->
+      <div class="card">
+        <h3>Impact Metrics</h3>
+        <div class="stat-row">
+          <span class="label">Added daily trips</span>
+          <span class="value neutral" id="stat-trips">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Peak-hour trips</span>
+          <span class="value neutral" id="stat-peak">—</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Delay change (VHD)</span>
+          <span class="value neutral" id="stat-delay">—</span>
+        </div>
+      </div>
+
+      <!-- Worst intersections -->
+      <div class="card">
+        <h3>Worst Intersections (V/C)</h3>
+        <ul id="worst-list">
+          <li class="intersection-row">
+            <span class="coords">Waiting for simulation…</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Description from agent -->
+      <div class="card">
+        <h3>Agent Summary</h3>
+        <p id="metrics-desc" style="margin:0;font-size:12px;color:var(--muted);">
+          Submit a scenario via the watsonx Orchestrate chat or the API
+          to run the simulation.
+        </p>
+      </div>
+
+      <!-- V/C colour legend -->
+      <div class="card">
+        <h3>V/C Legend</h3>
+        <div style="display:flex;gap:0;height:10px;border-radius:5px;overflow:hidden;margin-bottom:6px;">
+          <div style="flex:1;background:#3fb950;"></div>
+          <div style="flex:1;background:#8cc83c;"></div>
+          <div style="flex:1;background:#d29922;"></div>
+          <div style="flex:1;background:#e86c3a;"></div>
+          <div style="flex:1;background:#f85149;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);">
+          <span>Free flow (0)</span>
+          <span>Congested (≥1.0)</span>
+        </div>
+      </div>
+
+    </div><!-- /panel-body -->
+
+    <!-- Status bar -->
+    <div id="status-bar">
+      <div id="status-dot" class="ok"></div>
+      <span id="status-text">Waiting for data…</span>
+      <div id="legend">
+        <span class="legend-seg">
+          <span class="legend-swatch" style="background:#fd805d;"></span>
+          Vehicles
+        </span>
+        <span class="legend-seg">
+          <span class="legend-swatch" style="background:#f85149;"></span>
+          Congested
+        </span>
+      </div>
+    </div>
+
+  </aside><!-- /panel -->
+
+  <script src="app.js"></script>
+
 </body>
 </html>

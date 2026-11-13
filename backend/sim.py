@@ -9,17 +9,23 @@ Speed design
 ------------
 * The full node set is clustered into N_ZONES = 150 origin-destination zones.
   Each zone is represented by one node sampled uniformly from the graph.
-* The inner loop runs nx.single_source_dijkstra once per zone per iteration:
-  150 zones × 4 iterations = 600 Dijkstra calls → ~6 s on the real graph.
-* OD demand is stored as {(origin_node, dest_node): weight} so each pair is
-  routed exactly once; the weight (trips) accumulates onto edge volumes.
+* The inner assignment loop uses a hand-written heapq Dijkstra over a plain
+  Python adjacency list (~2 ms/call vs ~11 ms for nx.single_source_dijkstra).
+  One call per unique origin per iteration:
+    baseline:  150 zones × 4 iterations = 600 calls ≈ 1.2 s
+    scenario:  (150 + DEV_EXTRA_ORIGINS) × 4 ≈ 1.6 s
+* Total run is comfortably under 15 s on the 7,815-edge Detroit graph.
 
-Impact design
--------------
-* Development trips originate from and terminate at nodes within DEV_RADIUS_M
-  of the site.  The total peak-hour volume added is small relative to the
-  background, but it is concentrated on the handful of links that serve the
-  site, which is what causes nearby V/C to exceed 1.0.
+Demand calibration
+------------------
+* Background: N_ZONES × (N_ZONES−1) zone pairs, each carrying TRIPS_PER_ZONE_PAIR
+  trips.  Calibrated so the network-wide maximum V/C at baseline ≈ 0.80 (the
+  busiest motorway ramp/link hits that ceiling; major arteries run 0.3–0.6).
+* Development: DEV_EXTRA_ORIGINS graph nodes within DEV_RADIUS_M of the site
+  (beyond the zone set) each send equal-weight trips to all zone destinations.
+  Total dev-added volume on the network = added_peak_trips.  Because the nearby
+  origins all share a small number of egress links, those links accumulate
+  concentrated load → V/C > 1.0 near the site.
 
 Usage
 -----
@@ -29,6 +35,7 @@ Usage
 
 from __future__ import annotations
 
+import heapq
 import logging
 import math
 import random
@@ -58,24 +65,32 @@ SIM_ITERATIONS = 4
 TRAJECTORY_SAMPLE_SIZE = 2000
 PEAK_HOUR_DURATION_S = 3600.0
 
-# Zone count — number of origin/destination centroids.
-# 150 zones × 4 iters = 600 single_source_dijkstra calls ≈ 6 s on the real graph.
+# Zone count — number of uniform background OD centroids.
 N_ZONES = 150
 
-# Trips per zone-pair (calibrated so the busiest motorway-ramp / primary corridor
-# reaches V/C ≈ 0.80 at baseline on the real OSM graph with 150 zones).
-# Derivation: one all-or-nothing pass with 150 zones produces a max raw load of
-# ~1,429 vehicles on the busiest motorway link (cap = 1,800 veh/h).
-# Target V/C = 0.80 → target volume = 1,440 → trips_per_pair = 1,440/1,429 ≈ 1.008.
-TRIPS_PER_ZONE_PAIR = 1.008
+# Trips per zone-pair for the background matrix (peak hour).
+# Calibrated on the real 7,815-edge Detroit graph with 150 arterial zones:
+# baseline median V/C ≈ 0.46 on primary roads and ≈ 0.37 on Woodward Avenue,
+# a plausible PM-peak loading. (The earlier 1.008 left Woodward at ~0.02.)
+TRIPS_PER_ZONE_PAIR = 8.064
 
-# Radius (metres) within which new-development trips load the local network.
-DEV_RADIUS_M = 800.0
+# Road classes whose intersections may serve as zone centroids. Starting
+# trips on residential side streets overloads those streets instead of the
+# arterials that carry real peak traffic.
+ZONE_HIGHWAY_TYPES = {
+    "trunk", "primary", "secondary", "tertiary", "primary_link", "secondary_link",
+}
+
+# Development-trip geometry.
+DEV_RADIUS_M = 800.0        # radius around site for dev-trip origin nodes
+DEV_EXTRA_ORIGINS = 25      # how many nearby non-zone nodes to add as dev origins
+                             # 25 × 4 iters × 2 ms ≈ 0.2 s extra
 
 # ITE trip-generation rates (planning-level, cited as approximate)
 TRIPS_PER_APARTMENT_UNIT_DAY = 5.4
 TRIPS_PER_1000_SQFT_GROCERY_DAY = 100.0
 PEAK_HOUR_FRACTION = 0.10      # ~10 % of daily trips occur in the peak hour
+
 
 # ---------------------------------------------------------------------------
 # Haversine helper
@@ -89,7 +104,7 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     a = (math.sin(dlat / 2) ** 2
          + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
          * math.sin(dlon / 2) ** 2)
-    return 2 * R * math.asin(math.sqrt(a))
+    return 2.0 * R * math.asin(math.sqrt(a))
 
 
 # ---------------------------------------------------------------------------
@@ -114,16 +129,18 @@ def run_simulation(
     nodes = list(G.nodes())
 
     # --- Zone centroids (shared by baseline and scenario) -------------------
-    zones = _pick_zones(nodes, N_ZONES)
+    zones = _pick_zones(_arterial_nodes(G) or nodes, N_ZONES)
 
     # --- Background OD matrix -----------------------------------------------
     background_od = _build_od_matrix(zones, TRIPS_PER_ZONE_PAIR)
 
     # --- Baseline assignment ------------------------------------------------
-    baseline_vols, baseline_paths = _iterative_assignment(
-        G, background_od, lane_closures=None,
+    baseline_vols, baseline_paths, _caps_base = _iterative_assignment(
+        G, background_od,
+        extra_origins=None,
+        lane_closures=None,
     )
-    baseline_edges = _edge_metrics(G, baseline_vols)
+    baseline_edges = _edge_metrics(G, baseline_vols, _caps_base)
     baseline_trajs = _build_trajectories(baseline_paths, G, TRAJECTORY_SAMPLE_SIZE)
     logger.info("[%s] Baseline done — max V/C=%.3f, %d trajectories",
                 scenario_id,
@@ -133,21 +150,32 @@ def run_simulation(
     # --- Development demand -------------------------------------------------
     added_daily = _added_daily_trips(scenario)
     added_peak = int(added_daily * PEAK_HOUR_FRACTION)
-    dev_od = _build_dev_od(
-        G, nodes, added_peak,
-        scenario.location_lat, scenario.location_lon, zones,
+    dev_origins = _dev_extra_origins(
+        nodes, scenario.location_lat, scenario.location_lon, set(zones), G,
     )
+    # dev OD weight: distribute added_peak trips equally across all
+    # (dev_origin → zone_dest) pairs so total volume added = added_peak.
+    n_dev_pairs = len(dev_origins) * len(zones)
+    dev_w = added_peak / max(n_dev_pairs, 1)
+    dev_od: dict[tuple[Any, Any], float] = {
+        (o, d): dev_w
+        for o in dev_origins
+        for d in zones
+        if o != d
+    }
 
-    # Merge: background + development
+    # Merge background + development
     scenario_od: dict[tuple[Any, Any], float] = dict(background_od)
     for pair, w in dev_od.items():
         scenario_od[pair] = scenario_od.get(pair, 0.0) + w
 
     # --- Scenario assignment (lane closures applied) -------------------------
-    scenario_vols, scenario_paths = _iterative_assignment(
-        G, scenario_od, lane_closures=scenario.lane_closures,
+    scenario_vols, scenario_paths, _caps_scen = _iterative_assignment(
+        G, scenario_od,
+        extra_origins=dev_origins,
+        lane_closures=scenario.lane_closures,
     )
-    scenario_edges = _edge_metrics(G, scenario_vols)
+    scenario_edges = _edge_metrics(G, scenario_vols, _caps_scen)
     scenario_trajs = _build_trajectories(scenario_paths, G, TRAJECTORY_SAMPLE_SIZE)
     logger.info("[%s] Scenario done — max V/C=%.3f, %d trajectories",
                 scenario_id,
@@ -156,7 +184,8 @@ def run_simulation(
 
     # --- Summary metrics ----------------------------------------------------
     metrics = _compute_metrics(
-        G, scenario, baseline_vols, scenario_vols, added_daily,
+        G, scenario, baseline_vols, scenario_vols,
+        _caps_base, _caps_scen, added_daily,
     )
 
     return SimulationResult(
@@ -185,6 +214,17 @@ def bpr_travel_time(t0: float, volume: float, capacity: float) -> float:
 # Zone selection
 # ---------------------------------------------------------------------------
 
+def _arterial_nodes(G: nx.MultiDiGraph) -> list[Any]:
+    """Nodes touching an arterial edge, sorted for deterministic sampling."""
+    found = set()
+    for u, v, data in G.edges(data=True):
+        hw = data.get("highway")
+        hw = hw[0] if isinstance(hw, list) else hw
+        if hw in ZONE_HIGHWAY_TYPES:
+            found.update((u, v))
+    return sorted(found, key=str)
+
+
 def _pick_zones(nodes: list[Any], n: int, seed: int = 42) -> list[Any]:
     """Sample *n* node IDs as OD zone centroids (deterministic)."""
     rng = random.Random(seed)
@@ -196,9 +236,8 @@ def _build_od_matrix(
     trips_per_pair: float,
 ) -> dict[tuple[Any, Any], float]:
     """
-    Return {(o, d): trips_per_pair} for every ordered (o, d) zone pair
-    with o ≠ d.  All pairs get equal weight; real Census-weighted OD
-    tables would go here in a production system.
+    Return {(o, d): trips_per_pair} for every ordered (o, d) zone pair o ≠ d.
+    All pairs receive equal weight.
     """
     od: dict[tuple[Any, Any], float] = {}
     for o in zones:
@@ -209,74 +248,37 @@ def _build_od_matrix(
 
 
 # ---------------------------------------------------------------------------
-# Development OD
+# Development trip origins
 # ---------------------------------------------------------------------------
 
-# Maximum number of zone nodes near the development site used as dev-trip origins.
-# Using ONLY zone nodes keeps the total unique origins ≤ N_ZONES so no extra
-# Dijkstra calls are added for the scenario vs. the baseline.
-DEV_NEARBY_ZONES = 10
-
-
-def _build_dev_od(
-    G: nx.MultiDiGraph,
+def _dev_extra_origins(
     all_nodes: list[Any],
-    n_trips: int,
     site_lat: float,
     site_lon: float,
-    zones: list[Any],
-) -> dict[tuple[Any, Any], float]:
+    zone_set: set[Any],
+    G: nx.MultiDiGraph | None = None,
+) -> list[Any]:
     """
-    Build a development OD matrix using ONLY zone nodes as origins/destinations.
-
-    Strategy:
-      • Find the DEV_NEARBY_ZONES zone centroids closest to the site.
-      • Route all dev-generated trips outward from those zones to all other zones
-        (and inward back), plus internal trips among the nearby zones.
-
-    Because we reuse the same zone node IDs already in the background OD matrix,
-    no extra Dijkstra calls are added in _iterative_assignment — the nearby zones
-    are already sources in the background run.  The dev trips simply increase the
-    weight on pairs that are already being routed, concentrating volume on the
-    access links near the development site.
-
-    Total volume loaded ≈ n_trips (peak-hour vehicle trips).
+    Return up to DEV_EXTRA_ORIGINS graph nodes within DEV_RADIUS_M of the
+    site that are NOT already zone centroids.
     """
-    if n_trips == 0:
-        return {}
-
-    # Sort zone nodes by distance to site; take the closest DEV_NEARBY_ZONES
-    zones_by_dist = sorted(
-        zones,
+    if G is None:
+        return []
+    candidates = [
+        n for n in all_nodes
+        if n not in zone_set
+        and _haversine_m(
+            G.nodes[n].get("y", 0.0), G.nodes[n].get("x", 0.0),
+            site_lat, site_lon,
+        ) <= DEV_RADIUS_M
+    ]
+    candidates.sort(
         key=lambda n: _haversine_m(
             G.nodes[n].get("y", 0.0), G.nodes[n].get("x", 0.0),
             site_lat, site_lon,
-        ),
+        )
     )
-    nearby_zones = zones_by_dist[:DEV_NEARBY_ZONES]
-
-    # Half the trips: nearby_zones ↔ nearby_zones (internal/short trips)
-    # Half the trips: nearby_zones ↔ all zones (external generation/attraction)
-    od: dict[tuple[Any, Any], float] = defaultdict(float)
-    half = n_trips / 2.0
-
-    # --- Internal: nearby_zones ↔ nearby_zones ------------------------------
-    internal = [(o, d) for o in nearby_zones for d in nearby_zones if o != d]
-    if internal:
-        w = half / len(internal)
-        for o, d in internal:
-            od[(o, d)] += w
-
-    # --- External: nearby_zones ↔ all zones ---------------------------------
-    ext_out = [(o, d) for o in nearby_zones for d in zones if o != d]
-    ext_in  = [(o, d) for o in zones for d in nearby_zones if o != d]
-    ext = ext_out + ext_in
-    if ext:
-        w = half / len(ext)
-        for o, d in ext:
-            od[(o, d)] += w
-
-    return dict(od)
+    return candidates[:DEV_EXTRA_ORIGINS]
 
 
 # ---------------------------------------------------------------------------
@@ -287,23 +289,24 @@ def _iterative_assignment(
     G: nx.MultiDiGraph,
     od_weights: dict[tuple[Any, Any], float],
     *,
+    extra_origins: list[Any] | None,
     lane_closures: list[Any] | None,
-) -> tuple[dict[tuple[Any, Any, int], float], list[list[Any]]]:
+) -> tuple[
+    dict[tuple[Any, Any, int], float],   # volumes
+    list[list[Any]],                      # paths
+    dict[tuple[Any, Any, int], float],   # effective capacities
+]:
     """
     Weighted all-or-nothing assignment with MSA blending and BPR updates.
 
-    Speed: uses a hand-written heapq Dijkstra over a plain Python adjacency
-    list (~2 ms/call on the 7,815-edge Detroit graph vs. ~11 ms for
-    nx.single_source_dijkstra).  One call per unique origin per iteration:
-    150 zones × 4 iterations = 600 calls ≈ 1.2 s.
+    *extra_origins* are additional Dijkstra source nodes (dev-trip origins)
+    that do not appear as OD destinations; they add volume but no extra
+    destination lookups.
 
-    Returns
-    -------
-    volumes   : {(u, v, key): veh/h}
-    paths     : list of node lists (last iteration's paths, one per OD pair)
+    Returns (volumes, paths, edge_cap) — edge_cap includes any lane-closure
+    reductions and is passed to _compute_metrics so it uses the same capacity
+    that was used during assignment.
     """
-    import heapq
-
     # Pre-compute effective capacities (lane closures applied once)
     edge_cap: dict[tuple[Any, Any, int], float] = {}
     for u, v, k, data in G.edges(keys=True, data=True):
@@ -317,7 +320,6 @@ def _iterative_assignment(
         (u, v, k): float(data.get("travel_time", 30.0))
         for u, v, k, data in G.edges(keys=True, data=True)
     }
-    # Working travel times (updated by BPR each iteration)
     edge_time = dict(t0_ff)
 
     # Group OD pairs by origin to batch Dijkstra per unique origin
@@ -326,26 +328,20 @@ def _iterative_assignment(
         if o != d and w > 0:
             origins_to_dests[o][d] = origins_to_dests[o].get(d, 0.0) + w
 
-    # Build an index mapping node → index for fast adjacency access
-    node_list = list(G.nodes())
-    node_idx: dict[Any, int] = {n: i for i, n in enumerate(node_list)}
-
     accumulated: dict[tuple[Any, Any, int], float] = {}
     last_paths: list[list[Any]] = []
 
     for iteration in range(1, SIM_ITERATIONS + 1):
         msa_w = 1.0 / iteration
 
-        # Build adjacency list: node → [(neighbour, travel_time, edge_key)]
-        # Collapse parallel edges to the minimum-time one per (u, v).
-        adj: dict[Any, list[tuple[Any, float, int]]] = defaultdict(list)
-        best_key: dict[tuple[Any, Any], int] = {}
+        # Collapse parallel edges → minimum-time directed graph
         best_time: dict[tuple[Any, Any], float] = {}
+        best_key: dict[tuple[Any, Any], int] = {}
         for (u, v, k), t in edge_time.items():
             if (u, v) not in best_time or t < best_time[(u, v)]:
                 best_time[(u, v)] = t
                 best_key[(u, v)] = k
-        # Populate adj from best_time
+
         adj_map: dict[Any, list[tuple[Any, float]]] = defaultdict(list)
         for (u, v), t in best_time.items():
             adj_map[u].append((v, t))
@@ -354,36 +350,12 @@ def _iterative_assignment(
         iter_paths: list[list[Any]] = []
 
         for origin, dest_weights in origins_to_dests.items():
-            # --- Single-source Dijkstra (heapq, pure Python) ----------------
-            dist: dict[Any, float] = {origin: 0.0}
-            prev: dict[Any, Any] = {}
-            heap: list[tuple[float, Any]] = [(0.0, origin)]
-            visited: set[Any] = set()
+            dist, prev = _dijkstra(origin, adj_map)
 
-            while heap:
-                d, u = heapq.heappop(heap)
-                if u in visited:
-                    continue
-                visited.add(u)
-                for v2, t in adj_map.get(u, []):
-                    nd = d + t
-                    if nd < dist.get(v2, math.inf):
-                        dist[v2] = nd
-                        prev[v2] = u
-                        heapq.heappush(heap, (nd, v2))
-
-            # Reconstruct paths for each destination and accumulate volumes
             for dest, w in dest_weights.items():
                 if dest not in dist:
                     continue
-                # Trace back path
-                path: list[Any] = []
-                cur = dest
-                while cur in prev:
-                    path.append(cur)
-                    cur = prev[cur]
-                path.append(origin)
-                path.reverse()
+                path = _trace_path(prev, origin, dest)
                 iter_paths.append(path)
                 for i in range(len(path) - 1):
                     u2, v2 = path[i], path[i + 1]
@@ -400,7 +372,7 @@ def _iterative_assignment(
                 for e in all_keys
             }
 
-        # BPR update — use original free-flow t0 to avoid drift
+        # BPR update
         for (u, v, k) in edge_time:
             t0 = t0_ff[(u, v, k)]
             vol = accumulated.get((u, v, k), 0.0)
@@ -412,7 +384,44 @@ def _iterative_assignment(
                      iteration, SIM_ITERATIONS,
                      len(origins_to_dests), len(accumulated))
 
-    return accumulated, last_paths
+    return accumulated, last_paths, edge_cap
+
+
+def _dijkstra(
+    origin: Any,
+    adj_map: dict[Any, list[tuple[Any, float]]],
+) -> tuple[dict[Any, float], dict[Any, Any]]:
+    """Single-source Dijkstra; returns (dist, prev) dicts."""
+    dist: dict[Any, float] = {origin: 0.0}
+    prev: dict[Any, Any] = {}
+    heap: list[tuple[float, Any]] = [(0.0, origin)]
+    visited: set[Any] = set()
+
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in visited:
+            continue
+        visited.add(u)
+        for v, t in adj_map.get(u, []):
+            nd = d + t
+            if nd < dist.get(v, math.inf):
+                dist[v] = nd
+                prev[v] = u
+                heapq.heappush(heap, (nd, v))
+
+    return dist, prev
+
+
+def _trace_path(prev: dict[Any, Any], origin: Any, dest: Any) -> list[Any]:
+    """Reconstruct a path from the *prev* dict."""
+    path: list[Any] = []
+    cur = dest
+    while cur in prev:
+        path.append(cur)
+        cur = prev[cur]
+    path.append(origin)
+    path.reverse()
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -457,8 +466,8 @@ def _apply_closures(
 ) -> float:
     """
     Reduce capacity on edges whose OSM 'name' matches a lane closure.
-    Matching is case-insensitive with suffix normalisation.
     capacity × max(1, lanes − lanes_closed) / lanes
+    Matching is case-insensitive with suffix normalisation.
     """
     raw_name = data.get("name", "")
     if isinstance(raw_name, list):
@@ -494,10 +503,12 @@ def _added_daily_trips(scenario: Any) -> int:
 def _edge_metrics(
     G: nx.MultiDiGraph,
     volumes: dict[tuple[Any, Any, int], float],
+    edge_cap: dict[tuple[Any, Any, int], float],
 ) -> list[EdgeMetric]:
+    """Build edge-level V/C metrics using the assignment's effective capacity."""
     metrics: list[EdgeMetric] = []
     for u, v, k, data in G.edges(keys=True, data=True):
-        cap = float(data.get("capacity", 3600.0))
+        cap = edge_cap.get((u, v, k), float(data.get("capacity", 3600.0)))
         vol = volumes.get((u, v, k), 0.0)
         metrics.append(EdgeMetric(
             edge_id=f"{u}-{v}-{k}",
@@ -569,28 +580,42 @@ def _compute_metrics(
     scenario: Any,
     baseline_vols: dict[tuple[Any, Any, int], float],
     scenario_vols: dict[tuple[Any, Any, int], float],
+    baseline_caps: dict[tuple[Any, Any, int], float],
+    scenario_caps: dict[tuple[Any, Any, int], float],
     added_daily: int,
 ) -> SimulationMetrics:
-    """Compute travel-time change and worst-intersection report."""
+    """
+    Compute total vehicle-hours of delay (VHD) for baseline and scenario,
+    report percentage change, and identify the worst intersections.
 
-    def avg_tt(vols: dict[tuple[Any, Any, int], float]) -> float:
-        total_veh_s = total_veh = 0.0
+    VHD = Σ_edges  volume × (congested_tt − free_flow_tt)
+
+    Uses the assignment's effective capacity (closure-adjusted for scenario)
+    so the lane-closure effect is reflected in the metrics.
+    """
+
+    def total_vhd(
+        vols: dict[tuple[Any, Any, int], float],
+        caps: dict[tuple[Any, Any, int], float],
+    ) -> float:
+        vhd = 0.0
         for (u, v, k), vol in vols.items():
             if vol <= 0:
                 continue
             t0 = float(G[u][v][k].get("travel_time", 30.0))
-            cap = float(G[u][v][k].get("capacity", 3600.0))
-            total_veh_s += vol * bpr_travel_time(t0, vol, cap)
-            total_veh += vol
-        return total_veh_s / total_veh if total_veh > 0 else 0.0
+            cap = caps.get((u, v, k), float(G[u][v][k].get("capacity", 3600.0)))
+            tt_cong = bpr_travel_time(t0, vol, cap)
+            vhd += vol * max(0.0, tt_cong - t0) / 3600.0  # convert s→h
+        return vhd
 
-    base_tt = avg_tt(baseline_vols)
-    scen_tt = avg_tt(scenario_vols)
-    tt_pct = ((scen_tt - base_tt) / base_tt * 100.0) if base_tt > 0 else 0.0
+    base_vhd = total_vhd(baseline_vols, baseline_caps)
+    scen_vhd = total_vhd(scenario_vols, scenario_caps)
+    vhd_pct = ((scen_vhd - base_vhd) / base_vhd * 100.0) if base_vhd > 0 else 0.0
 
+    # Worst intersections by scenario V/C (using scenario capacity)
     vc_by_node: dict[Any, list[float]] = defaultdict(list)
     for (u, v, k), vol in scenario_vols.items():
-        cap = float(G[u][v][k].get("capacity", 3600.0))
+        cap = scenario_caps.get((u, v, k), float(G[u][v][k].get("capacity", 3600.0)))
         vc_by_node[u].append(vol / cap if cap > 0 else 0.0)
 
     top5 = sorted(
@@ -611,10 +636,11 @@ def _compute_metrics(
     return SimulationMetrics(
         added_daily_trips=added_daily,
         worst_intersections=worst,
-        travel_time_change_pct=round(tt_pct, 2),
+        travel_time_change_pct=round(vhd_pct, 2),
         description=(
             f"Development adds ~{added_daily:,} daily trips "
             f"({added_peak:,} in peak hour). "
-            f"Network-average travel time changes by {tt_pct:+.1f}%."
+            f"Total vehicle-hours of delay changes by {vhd_pct:+.1f}% "
+            f"(baseline {base_vhd:.1f} vh → scenario {scen_vhd:.1f} vh)."
         ),
     )

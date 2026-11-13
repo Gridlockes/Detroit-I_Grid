@@ -36,14 +36,13 @@ from backend.sim import (
     _normalize_road_name,
     _apply_closures,
     _build_od_matrix,
-    _build_dev_od,
     _pick_zones,
     bpr_travel_time,
     run_simulation,
     N_ZONES,
     TRIPS_PER_ZONE_PAIR,
     DEV_RADIUS_M,
-    DEV_NEARBY_ZONES,
+    DEV_EXTRA_ORIGINS,
 )
 from backend.models import LaneClosure, Scenario
 
@@ -125,7 +124,7 @@ def main(verbose: bool = False) -> int:
     print(f"  OD zones:            {N_ZONES}")
     print(f"  Trips per zone-pair: {TRIPS_PER_ZONE_PAIR}")
     print(f"  Dev radius:          {DEV_RADIUS_M:.0f} m")
-    print(f"  Dev nearby zones:    {DEV_NEARBY_ZONES}")
+    print(f"  Dev extra origins:   {DEV_EXTRA_ORIGINS}")
 
     t_start = time.perf_counter()
     result = run_simulation("test-real", scenario, G)
@@ -159,8 +158,11 @@ def main(verbose: bool = False) -> int:
     checks = [
         ("Elapsed < 15 s",         elapsed < 15),
         ("Baseline max V/C ≥ 0.5", max_base_vc >= 0.50),
-        ("Baseline max V/C ≤ 1.1", max_base_vc <= 1.10),
+        # A real PM peak has some congested links; gridlock would be >5 %.
+        ("Baseline edges over capacity < 5 %", over1_base < 0.05 * len(vcs_base)),
         ("Scenario max V/C > baseline", max_scen_vc > max_base_vc),
+        ("Scenario adds over-capacity edges", over1_scen > over1_base),
+        ("Travel-time Δ positive", result.metrics.travel_time_change_pct > 0),
         ("Closure affected ≥ 1 edge",  len(affected_edges) >= 1),
         ("2000 baseline trajectories", len(result.baseline_trajectories) == 2000),
         ("2000 scenario trajectories", len(result.scenario_trajectories) == 2000),

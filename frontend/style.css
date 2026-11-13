@@ -1,18 +1,20 @@
 /*
  * frontend/style.css
- * Global styles — dark theme for screen recordings.
- * TODO (prompt 5): flesh out with map panel, metrics card, toggle styles.
+ * Detroit I-Grid — dark theme for screen recordings.
  */
 
 :root {
   --bg:          #0d1117;
   --surface:     #161b22;
+  --surface2:    #1c2129;
   --border:      #30363d;
   --text:        #e6edf3;
   --muted:       #8b949e;
   --accent-green:#3fb950;
   --accent-red:  #f85149;
   --accent-blue: #58a6ff;
+  --accent-amber:#d29922;
+  --panel-w:     320px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -23,7 +25,223 @@ body {
   color: var(--text);
   font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.5;
+  overflow: hidden;
 }
 
 a { color: var(--accent-blue); }
+
+/* ── Map ──────────────────────────────────────────────────────── */
+#map {
+  position: fixed;
+  inset: 0;
+}
+
+/* ── Side panel ───────────────────────────────────────────────── */
+#panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: var(--panel-w);
+  height: 100%;
+  background: rgba(13, 17, 23, 0.92);
+  backdrop-filter: blur(8px);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 10;
+}
+
+#panel-header {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#panel-header h1 {
+  margin: 0 0 2px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+
+#panel-header p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+#panel-body::-webkit-scrollbar { width: 6px; }
+#panel-body::-webkit-scrollbar-track { background: transparent; }
+#panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Card ─────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── Toggle ───────────────────────────────────────────────────── */
+#mode-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+#mode-toggle button {
+  flex: 1;
+  padding: 7px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+#mode-toggle button.active {
+  background: var(--surface2);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+/* ── Slider ───────────────────────────────────────────────────── */
+#slider-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#slider-wrap label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#time-slider {
+  width: 100%;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
+/* ── Speed control ────────────────────────────────────────────── */
+#speed-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#speed-wrap input[type=range] {
+  flex: 1;
+  accent-color: var(--accent-amber);
+}
+
+/* ── Metrics ──────────────────────────────────────────────────── */
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.stat-row:last-child { border-bottom: none; }
+.stat-row .label { color: var(--muted); }
+.stat-row .value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.value.up   { color: var(--accent-red); }
+.value.down { color: var(--accent-green); }
+.value.neutral { color: var(--text); }
+
+#worst-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.intersection-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.intersection-row .coords { color: var(--muted); }
+.intersection-row .vc { font-weight: 600; }
+
+/* ── Status / legend ──────────────────────────────────────────── */
+#status-bar {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+#status-dot.ok   { background: var(--accent-green); }
+#status-dot.busy { background: var(--accent-amber);
+                   animation: pulse 1s infinite; }
+#status-dot.err  { background: var(--accent-red); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+#legend {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.legend-seg {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+}

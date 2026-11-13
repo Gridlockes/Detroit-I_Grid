@@ -1,9 +1,11 @@
 """
 routers/simulation.py — POST /simulate/{id}  ·  GET /results/{id}  ·  GET /results/latest
+                       · GET /graph/edges
 
 POST /simulate/{id}   – kick off the traffic simulation for a saved scenario
 GET  /results/{id}    – return trips, congestion, and metrics (polled by the map)
 GET  /results/latest  – convenience alias; the frontend polls this endpoint
+GET  /graph/edges     – edge geometries for the PathLayer (lon/lat per edge)
 """
 
 from __future__ import annotations
@@ -74,6 +76,21 @@ def _run_simulation_task(scenario_id: str) -> None:
 # Fetch results
 # ---------------------------------------------------------------------------
 
+# NOTE: /results/latest must be registered before /results/{scenario_id},
+# otherwise FastAPI matches "latest" as a scenario ID and returns 404.
+@router.get(
+    "/results/latest",
+    response_model=SimulationResult,
+    summary="Get results for the most recent simulation",
+    description="Convenience endpoint polled by the frontend map page.",
+)
+def get_latest_results() -> SimulationResult:
+    result = store.get_latest_result()
+    if result is None:
+        raise HTTPException(status_code=404, detail="No simulation has been run yet")
+    return result
+
+
 @router.get(
     "/results/{scenario_id}",
     response_model=SimulationResult,
@@ -87,14 +104,32 @@ def get_results(scenario_id: str) -> SimulationResult:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Graph edge geometries (for PathLayer)
+# ---------------------------------------------------------------------------
+
 @router.get(
-    "/results/latest",
-    response_model=SimulationResult,
-    summary="Get results for the most recent simulation",
-    description="Convenience endpoint polled by the frontend map page.",
+    "/graph/edges",
+    summary="Road network edge geometries",
+    description=(
+        "Returns a GeoJSON-style list of edge objects with start/end coordinates "
+        "and the OSM road name.  Used by the frontend PathLayer to draw edges at "
+        "their real geographic positions rather than approximating from trajectories."
+    ),
 )
-def get_latest_results() -> SimulationResult:
-    result = store.get_latest_result()
-    if result is None:
-        raise HTTPException(status_code=404, detail="No simulation has been run yet")
-    return result
+def get_graph_edges() -> dict:
+    """Return lightweight edge geometry: {edges: [{edge_id, lon0, lat0, lon1, lat1, name}]}"""
+    from ..network import get_graph
+    G = get_graph()
+    edges = []
+    for u, v, k, data in G.edges(keys=True, data=True):
+        nu, nv = G.nodes[u], G.nodes[v]
+        edges.append({
+            "edge_id": f"{u}-{v}-{k}",
+            "lon0": float(nu.get("x", 0.0)),
+            "lat0": float(nu.get("y", 0.0)),
+            "lon1": float(nv.get("x", 0.0)),
+            "lat1": float(nv.get("y", 0.0)),
+            "name": data.get("name", ""),
+        })
+    return {"edges": edges}
