@@ -1,0 +1,4 @@
+# This directory holds cached OSM graph data.
+# detroit.graphml is generated on first run by backend/network.py
+# and checked in so subsequent cold starts don't re-download.
+# Large binary files (shapefiles, raw CSVs) are .gitignored.

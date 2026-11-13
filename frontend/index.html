@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!--
+  Detroit I-Grid — frontend/index.html
+  MapLibre GL + deck.gl: animated traffic simulation viewer.
+
+  TODO (prompt 5): full implementation — TripsLayer, PathLayer,
+  baseline/scenario toggle, time slider, metrics panel, dark theme.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Detroit I-Grid</title>
+  <style>
+    body { margin: 0; background: #111; color: #eee; font-family: sans-serif; }
+    #map { width: 100vw; height: 100vh; }
+    #placeholder {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center; opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="placeholder">
+    <h2>Detroit I-Grid</h2>
+    <p>Map viewer — implement in prompt 5</p>
+  </div>
+</body>
+</html>

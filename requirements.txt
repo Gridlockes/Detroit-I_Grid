@@ -1,0 +1,23 @@
+# Detroit I-Grid — Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# Data validation (bundled with FastAPI but pinned for reproducibility)
+pydantic==2.10.2
+
+# Road network
+osmnx==2.0.0
+networkx==3.4.2
+
+# Numerical / data
+numpy==2.1.3
+pandas==2.2.3
+
+# HTTP client (used for any outbound calls, e.g. Census API)
+httpx==0.28.0
+
+# Environment variable loading
+python-dotenv==1.0.1

@@ -1,0 +1,29 @@
+/*
+ * frontend/style.css
+ * Global styles — dark theme for screen recordings.
+ * TODO (prompt 5): flesh out with map panel, metrics card, toggle styles.
+ */
+
+:root {
+  --bg:          #0d1117;
+  --surface:     #161b22;
+  --border:      #30363d;
+  --text:        #e6edf3;
+  --muted:       #8b949e;
+  --accent-green:#3fb950;
+  --accent-red:  #f85149;
+  --accent-blue: #58a6ff;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+a { color: var(--accent-blue); }
