@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from .routers import scenarios, simulation, utilities
+from .routers import agent, scenarios, simulation, utilities
 
 app = FastAPI(
     title="Detroit I-Grid API",
@@ -37,6 +37,7 @@ app.add_middleware(
 app.include_router(scenarios.router)
 app.include_router(simulation.router)
 app.include_router(utilities.router)
+app.include_router(agent.router)
 
 
 @app.get("/health", tags=["meta"])

@@ -22,6 +22,7 @@ PEAK_KW_PER_UNIT = 1.2
 @router.post(
     "/utilities",
     response_model=UtilityResult,
+    operation_id="estimate_utilities",
     summary="Estimate water, sewer, and power demand",
     description=(
         "Returns approximate planning-level utility demand for a proposed "

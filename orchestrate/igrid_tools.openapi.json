@@ -1,0 +1,486 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Detroit I-Grid tools",
+    "description": "Traffic-impact simulation for construction, demolition and development projects in Downtown/Midtown Detroit.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/utilities": {
+      "post": {
+        "tags": [
+          "utilities"
+        ],
+        "summary": "Estimate water, sewer, and power demand",
+        "description": "Returns approximate planning-level utility demand for a proposed development.  All figures are estimates; cite sources before use in any official document.",
+        "operationId": "estimate_utilities",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UtilityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UtilityResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/simulate": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Simulate the traffic impact of a Detroit construction, demolition or development project",
+        "description": "Runs the Detroit I-Grid traffic simulation (real OpenStreetMap road network, PM peak hour) for a proposed project, shows it on the live map, and returns a short impact summary: change in delay, trips added or removed, haul trucks, lane closures applied, and the streets near the site whose load rises most. Takes about 15-30 seconds.",
+        "operationId": "simulate_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentScenarioRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentImpact"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/locations": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "List Detroit landmarks the simulator recognises by name",
+        "operationId": "list_known_locations",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Known Locations"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AgentImpact": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "location": {
+            "type": "string",
+            "title": "Location",
+            "description": "Where the simulation placed the project"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "description": "Plain-English summary of the result"
+          },
+          "delay_change_pct": {
+            "type": "number",
+            "title": "Delay Change Pct",
+            "description": "Change in total vehicle-hours of delay, Downtown/Midtown, PM peak"
+          },
+          "added_daily_trips": {
+            "type": "integer",
+            "title": "Added Daily Trips"
+          },
+          "removed_daily_trips": {
+            "type": "integer",
+            "title": "Removed Daily Trips"
+          },
+          "truck_trips_per_day": {
+            "type": "integer",
+            "title": "Truck Trips Per Day"
+          },
+          "streets_most_affected": {
+            "items": {
+              "$ref": "#/components/schemas/StreetChange"
+            },
+            "type": "array",
+            "title": "Streets Most Affected",
+            "description": "Up to 5 named streets near the site with the largest increase"
+          },
+          "lane_closures_applied": {
+            "items": {
+              "$ref": "#/components/schemas/ClosureApplied"
+            },
+            "type": "array",
+            "title": "Lane Closures Applied"
+          },
+          "caveat": {
+            "type": "string",
+            "title": "Caveat"
+          },
+          "map_url_hint": {
+            "type": "string",
+            "title": "Map Url Hint"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "location",
+          "latitude",
+          "longitude",
+          "summary",
+          "delay_change_pct",
+          "added_daily_trips",
+          "removed_daily_trips",
+          "truck_trips_per_day",
+          "streets_most_affected",
+          "lane_closures_applied",
+          "caveat",
+          "map_url_hint"
+        ],
+        "title": "AgentImpact"
+      },
+      "AgentLaneClosure": {
+        "properties": {
+          "road_name": {
+            "type": "string",
+            "title": "Road Name",
+            "description": "Street to narrow, e.g. 'Woodward Ave', 'Jefferson Ave', 'I-375'"
+          },
+          "lanes_closed": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Lanes Closed",
+            "description": "Lanes closed in each direction",
+            "default": 1
+          },
+          "extent_m": {
+            "type": "number",
+            "maximum": 5000.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Extent M",
+            "description": "Only segments of this road within this many metres of the site are affected",
+            "default": 800.0
+          },
+          "start_date": {
+            "type": "string",
+            "title": "Start Date",
+            "description": "Optional ISO start date, e.g. '2027-03-01'",
+            "default": ""
+          },
+          "end_date": {
+            "type": "string",
+            "title": "End Date",
+            "description": "Optional ISO end date",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "road_name"
+        ],
+        "title": "AgentLaneClosure"
+      },
+      "AgentScenarioRequest": {
+        "properties": {
+          "project_description": {
+            "type": "string",
+            "title": "Project Description",
+            "description": "One-sentence description of the project"
+          },
+          "location": {
+            "type": "string",
+            "title": "Location",
+            "description": "Where the project is: a landmark ('Renaissance Center', 'I-375', 'Michigan Central', \"Hudson's site\", 'District Detroit') or an intersection ('Woodward Ave & Mack Ave')",
+            "default": ""
+          },
+          "latitude": {
+            "title": "Latitude",
+            "description": "Optional site latitude; overrides location",
+            "type": "number",
+            "nullable": true
+          },
+          "longitude": {
+            "title": "Longitude",
+            "description": "Optional site longitude; overrides location",
+            "type": "number",
+            "nullable": true
+          },
+          "housing_units": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Housing Units",
+            "description": "New residential units",
+            "default": 0
+          },
+          "retail_sqft": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Retail Sqft",
+            "description": "New retail floor area (sq ft)",
+            "default": 0
+          },
+          "office_sqft": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Office Sqft",
+            "description": "New office floor area (sq ft)",
+            "default": 0
+          },
+          "demolished_office_sqft": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Demolished Office Sqft",
+            "description": "Existing office floor area being demolished (sq ft)",
+            "default": 0
+          },
+          "existing_occupancy_percent": {
+            "type": "number",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Existing Occupancy Percent",
+            "description": "How full the demolished building is today, 0-100 %",
+            "default": 100
+          },
+          "truck_trips_per_day": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Truck Trips Per Day",
+            "description": "Construction / demolition haul-truck trips per day",
+            "default": 0
+          },
+          "opening_year": {
+            "type": "integer",
+            "title": "Opening Year",
+            "description": "Year the project opens or the work happens",
+            "default": 2028
+          },
+          "lane_closures": {
+            "items": {
+              "$ref": "#/components/schemas/AgentLaneClosure"
+            },
+            "type": "array",
+            "title": "Lane Closures",
+            "description": "Temporary lane closures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_description"
+        ],
+        "title": "AgentScenarioRequest",
+        "description": "A proposed project in Detroit, as an agent would describe it."
+      },
+      "ClosureApplied": {
+        "properties": {
+          "road_name": {
+            "type": "string",
+            "title": "Road Name"
+          },
+          "segments_closed": {
+            "type": "integer",
+            "title": "Segments Closed",
+            "description": "Road segments whose capacity was reduced (0 = name not found near site)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "road_name",
+          "segments_closed"
+        ],
+        "title": "ClosureApplied"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "StreetChange": {
+        "properties": {
+          "street": {
+            "type": "string",
+            "title": "Street"
+          },
+          "load_before_pct": {
+            "type": "integer",
+            "title": "Load Before Pct",
+            "description": "Share of road capacity used before the project"
+          },
+          "load_after_pct": {
+            "type": "integer",
+            "title": "Load After Pct",
+            "description": "Share of road capacity used with the project"
+          }
+        },
+        "type": "object",
+        "required": [
+          "street",
+          "load_before_pct",
+          "load_after_pct"
+        ],
+        "title": "StreetChange"
+      },
+      "UtilityRequest": {
+        "properties": {
+          "housing_units": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Housing Units",
+            "default": 0
+          },
+          "retail_sqft": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Retail Sqft",
+            "default": 0.0
+          },
+          "residents_per_unit": {
+            "type": "number",
+            "title": "Residents Per Unit",
+            "description": "Average household size",
+            "default": 2.1
+          }
+        },
+        "type": "object",
+        "title": "UtilityRequest"
+      },
+      "UtilityResult": {
+        "properties": {
+          "water_gpd": {
+            "type": "number",
+            "title": "Water Gpd",
+            "description": "Water demand, gallons per day (estimate)"
+          },
+          "sewer_gpd": {
+            "type": "number",
+            "title": "Sewer Gpd",
+            "description": "Sewer demand, gallons per day (estimate)"
+          },
+          "peak_power_kw": {
+            "type": "number",
+            "title": "Peak Power Kw",
+            "description": "Peak electrical demand, kW (estimate)"
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": "These are approximate planning-level estimates."
+          }
+        },
+        "type": "object",
+        "required": [
+          "water_gpd",
+          "sewer_gpd",
+          "peak_power_kw"
+        ],
+        "title": "UtilityResult"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://scanned-submitting-pipe-heroes.trycloudflare.com",
+      "description": "Detroit I-Grid API"
+    }
+  ]
+}

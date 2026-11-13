@@ -850,12 +850,16 @@ function init() {
     center: MAP_CENTER,
     zoom:   MAP_ZOOM,
     antialias: true,
+    // ?record=1: keep the frame buffer so the demo video recorder can capture it.
+    preserveDrawingBuffer: new URLSearchParams(location.search).has('record'),
   });
   mapRef = map;
 
   // ── deck.gl overlay (deck = window.deck from the CDN UMD build)
   // Hovering a road shows its street name and congestion level.
   const deckOverlay = new deck.MapboxOverlay({
+    // In record mode draw deck.gl into the map's own canvas (one capturable canvas).
+    interleaved: new URLSearchParams(location.search).has('record'),
     layers: [],
     getTooltip: ({ object, layer }) => {
       if (!object || !layer || layer.id !== 'congestion') return null;

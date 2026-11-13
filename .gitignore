@@ -124,3 +124,9 @@ cache/
 # Raw OSM extracts (large; data/detroit.graphml is the committed cache)
 *.osm.pbf
 data/*.osm
+
+# watsonx Orchestrate ADK virtualenv
+.venv-wxo/
+
+# temporary video asset
+frontend/_bob_frame.png

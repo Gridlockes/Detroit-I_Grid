@@ -62,6 +62,11 @@ GRAPHML_PATH = "data/detroit.graphml"
 OSM_XML_PATH = "data/detroit-drive.osm"
 
 
+# Loaded graphs, keyed by GraphML path. Loading from disk takes seconds, so
+# every simulation reuses the same in-memory graph (it is never mutated).
+_GRAPH_CACHE: dict[str, nx.MultiDiGraph] = {}
+
+
 def get_graph(cache_path: str = GRAPHML_PATH) -> nx.MultiDiGraph:
     """
     Return the Detroit drive network as a networkx MultiDiGraph.
@@ -79,11 +84,16 @@ def get_graph(cache_path: str = GRAPHML_PATH) -> nx.MultiDiGraph:
       - lanes_count    (int)   — number of lanes (parsed/defaulted)
       - capacity       (float) — link capacity in veh/h
     """
+    # --- 0. In-memory cache (the graph is read-only once loaded) ---
+    if cache_path in _GRAPH_CACHE:
+        return _GRAPH_CACHE[cache_path]
+
     # --- 1. Cache hit ---
     if os.path.exists(cache_path):
         logger.info("Loading cached graph from %s", cache_path)
         G = ox.load_graphml(cache_path)
         _coerce_numeric(G)
+        _GRAPH_CACHE[cache_path] = G
         return G
 
     # --- 1b. Local OSM extract (Geofabrik + osmium; no Overpass needed) ---
