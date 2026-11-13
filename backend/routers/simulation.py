@@ -50,14 +50,24 @@ def trigger_simulation(
 
 def _run_simulation_task(scenario_id: str) -> None:
     """Background task: load network, run sim, store result."""
-    # TODO (prompt 3/4): import get_graph and run_simulation and call them here
-    # from ..network import get_graph
-    # from ..sim import run_simulation
-    # G = get_graph()
-    # scenario = store.get_scenario(scenario_id)
-    # result = run_simulation(scenario_id, scenario, G)
-    # store.save_result(result)
-    pass
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from ..network import get_graph
+        from ..sim import run_simulation
+
+        scenario = store.get_scenario(scenario_id)
+        if scenario is None:
+            logger.error("[%s] scenario not found in store", scenario_id)
+            return
+
+        G = get_graph()
+        result = run_simulation(scenario_id, scenario, G)
+        store.save_result(result)
+    except Exception:
+        logger.exception("[%s] simulation failed", scenario_id)
+        from ..models import SimulationResult
+        store.save_result(SimulationResult(scenario_id=scenario_id, status="error"))
 
 
 # ---------------------------------------------------------------------------

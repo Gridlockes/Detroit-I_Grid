@@ -118,3 +118,9 @@ build/
 # DO NOT REMOVE ABOVE PATTERNS
 # Add project-specific patterns below
 # ============================================
+# osmnx HTTP response cache
+cache/
+
+# Raw OSM extracts (large; data/detroit.graphml is the committed cache)
+*.osm.pbf
+data/*.osm
