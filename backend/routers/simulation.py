@@ -120,16 +120,20 @@ def get_results(scenario_id: str) -> SimulationResult:
 def get_graph_edges() -> dict:
     """Return lightweight edge geometry: {edges: [{edge_id, lon0, lat0, lon1, lat1, name}]}"""
     from ..network import get_graph
+    from ..sim import edge_coords
     G = get_graph()
     edges = []
     for u, v, k, data in G.edges(keys=True, data=True):
         nu, nv = G.nodes[u], G.nodes[v]
+        # Full road shape (follows curves); ~1 m precision keeps the payload small.
+        coords = [[round(x, 5), round(y, 5)] for x, y in edge_coords(G, u, v, data)]
         edges.append({
             "edge_id": f"{u}-{v}-{k}",
             "lon0": float(nu.get("x", 0.0)),
             "lat0": float(nu.get("y", 0.0)),
             "lon1": float(nv.get("x", 0.0)),
             "lat1": float(nv.get("y", 0.0)),
+            "coords": coords,
             "name": data.get("name", ""),
         })
     return {"edges": edges}

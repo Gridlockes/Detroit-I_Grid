@@ -24,6 +24,13 @@ class LaneClosure(BaseModel):
     start_date: str = Field(..., description="ISO date, e.g. '2027-03-01'")
     end_date: str = Field(..., description="ISO date, e.g. '2027-09-01'")
     lanes_closed: int = Field(1, ge=1, description="Number of lanes closed (≥ 1)")
+    extent_m: float = Field(
+        800.0, gt=0,
+        description=(
+            "Closure applies only to segments of this road within this many metres "
+            "of the project site (work zones are local, not the whole road)"
+        ),
+    )
 
 
 class Scenario(BaseModel):
@@ -37,6 +44,7 @@ class Scenario(BaseModel):
     description: str = Field("", description="Human-readable description of the project")
     housing_units: int = Field(0, ge=0, description="Number of residential units")
     retail_sqft: float = Field(0.0, ge=0, description="Retail floor area in square feet")
+    office_sqft: float = Field(0.0, ge=0, description="New office floor area in square feet")
     opening_year: int = Field(2028, description="Year the development opens")
     lane_closures: list[LaneClosure] = Field(
         default_factory=list,
@@ -85,6 +93,9 @@ class Waypoint(BaseModel):
     lon: float
     lat: float
     timestamp: float
+    slow: float = Field(
+        1.0, description="Congestion slowdown on the segment starting here (congested ÷ free-flow time)",
+    )
 
 
 class VehicleTrajectory(BaseModel):
@@ -112,6 +123,10 @@ class SimulationResult(BaseModel):
     baseline_trajectories: list[VehicleTrajectory] = Field(default_factory=list)
     scenario_trajectories: list[VehicleTrajectory] = Field(default_factory=list)
     metrics: SimulationMetrics | None = None
+    # Work zone for the map: road segments with lanes closed in the scenario,
+    # and the project site itself.
+    closed_edge_ids: list[str] = Field(default_factory=list)
+    site: dict[str, float] | None = None
 
 
 # ---------------------------------------------------------------------------

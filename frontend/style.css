@@ -402,3 +402,37 @@ body.picking-location #map { cursor: crosshair !important; }
 /* Clickable street rows in the impact list */
 .intersection-row.clickable { cursor: pointer; }
 .intersection-row.clickable:hover { background: rgba(88, 166, 255, 0.10); }
+.preset-list { display: flex; flex-direction: column; gap: 6px; }
+.preset-btn.active { background: rgba(88, 166, 255, 0.22); }
+
+/* Lane-closure rows (sized to fit the side panel) */
+.closure-list { display: flex; flex-direction: column; gap: 8px; }
+.closure-row {
+  padding: 8px; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px;
+  min-width: 0;
+}
+.closure-row input {
+  width: 100%; min-width: 0; box-sizing: border-box;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-family: inherit; font-size: 12px; padding: 6px 8px;
+  text-transform: none; letter-spacing: normal;
+}
+.closure-row input:focus { outline: none; border-color: var(--accent-blue); }
+.lc-line { display: flex; gap: 6px; align-items: center; }
+.lc-line .lc-road { flex: 1; }
+.lc-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px;
+}
+.lc-grid label {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+}
+.lc-remove {
+  flex: none; width: 30px; height: 30px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.15); background: transparent; color: inherit; cursor: pointer;
+}
+.lc-remove:hover { border-color: var(--accent-red); color: var(--accent-red); }
+
+/* Let two-column fields shrink to the panel width (no horizontal scroll) */
+.field-row > .field { flex: 1 1 0; min-width: 0; }
+.field input, .field textarea { min-width: 0; max-width: 100%; box-sizing: border-box; }

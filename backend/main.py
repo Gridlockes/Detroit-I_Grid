@@ -11,6 +11,7 @@ Endpoints (imported from routers):
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from .routers import scenarios, simulation, utilities
 
@@ -22,6 +23,9 @@ app = FastAPI(
     ),
     version="0.1.0",
 )
+
+# Results JSON (vehicle paths) is ~15 MB raw but compresses ~10x.
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
 
 app.add_middleware(
     CORSMiddleware,

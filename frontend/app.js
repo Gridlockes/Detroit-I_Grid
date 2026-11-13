@@ -54,22 +54,14 @@ let mapRef             = null;  // the MapLibre Map, set in init()
 
 /* ── Colour scale  (V/C → RGB) ────────────────────────────────── */
 function vcColor(vc) {
-  // green [63,185,80] → amber [210,153,34] → red [248,81,73]
-  if (vc <= 0.5) {
-    const t = vc / 0.5;
-    return [
-      Math.round(63  + t * (210 - 63)),
-      Math.round(185 + t * (153 - 185)),
-      Math.round(80  + t * (34  - 80)),
-    ];
-  } else {
-    const t = (vc - 0.5) / 0.5;
-    return [
-      Math.round(210 + t * (248 - 210)),
-      Math.round(153 + t * (81  - 153)),
-      Math.round(34  + t * (73  - 34)),
-    ];
-  }
+  // green [63,185,80] → amber [210,153,34] → red [248,81,73] at V/C 1.0,
+  // then deepening to crimson [178,16,58] by V/C 2.0. Clamped: values above
+  // capacity must never extrapolate into magenta/blue.
+  const lerp = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  const x = Math.max(0, vc || 0);
+  if (x <= 0.5) return lerp([63, 185, 80], [210, 153, 34], x / 0.5);
+  if (x <= 1.0) return lerp([210, 153, 34], [248, 81, 73], (x - 0.5) / 0.5);
+  return lerp([248, 81, 73], [178, 16, 58], Math.min(1, (x - 1.0) / 1.0));
 }
 
 /* ── Coord parsing ─────────────────────────────────────────────── */
@@ -96,6 +88,7 @@ function buildTripData(trajectories) {
   return trajectories.map(t => ({
     vendor: 0,
     path: t.waypoints.map(w => [w.lon, w.lat, w.timestamp]),
+    slow: t.waypoints.map(w => w.slow || 1),   // congestion factor per segment
   })).filter(d => d.path.length >= 2);
 }
 
@@ -194,7 +187,8 @@ function makeHoloCarAtlas() {
   ctx.putImageData(img, 0, 0);
   return {
     atlas: canvas.toDataURL(),
-    mapping: { car: { x: 0, y: 0, width: w, height: h, mask: false } },
+    // mask:true → the sprite's alpha (shape, halo, scan-lines) is tinted by getColor.
+    mapping: { car: { x: 0, y: 0, width: w, height: h, mask: true } },
   };
 }
 let holoAtlas = null;
@@ -218,9 +212,70 @@ function carPositionsAt(trips, t) {
     // Heading: counter-clockwise degrees from east, corrected for longitude scale.
     const dx = (b[0] - a[0]) * Math.cos(lat * Math.PI / 180);
     const dy = b[1] - a[1];
-    cars.push({ position: [lon, lat], angle: Math.atan2(dy, dx) * 180 / Math.PI });
+    const slow = (trip.slow && trip.slow[lo]) || 1;
+    cars.push({ position: [lon, lat], angle: Math.atan2(dy, dx) * 180 / Math.PI, slow });
   }
   return cars;
+}
+
+// Car colour by congestion slowdown (congested ÷ free-flow travel time):
+// cyan = moving freely, yellow = slowed, hot pink = crawling.
+const CAR_FREE  = [0, 229, 255];
+const CAR_SLOW  = [255, 226, 64];    // yellow: distinct from amber roads
+const CAR_CRAWL = [255, 90, 230];    // hot pink: stands out on red, jammed roads
+function carColor(slow) {
+  const lerp = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  if (slow <= 1.1) return CAR_FREE;
+  if (slow <= 1.5) return lerp(CAR_FREE, CAR_SLOW, (slow - 1.1) / 0.4);
+  if (slow <= 2.2) return lerp(CAR_SLOW, CAR_CRAWL, (slow - 1.5) / 0.7);
+  return CAR_CRAWL;
+}
+
+/* ── Work zone: closed segments + project site (Scenario mode only) ── */
+let workZoneData = [];     // [{path}] for closed road segments
+let siteData     = [];     // [{position}] project site
+
+function makeWorkZoneLayers(realTs) {
+  if (currentMode !== 'scenario') return [];
+  const pulse = 0.5 + 0.5 * Math.sin(realTs / 300);          // 0..1, ~2 s period
+  const layers = [];
+  if (workZoneData.length) {
+    layers.push(new deck.PathLayer({
+      id: 'work-zone-glow',
+      data: workZoneData,
+      getPath: d => d.path,
+      getColor: [255, 170, 0],
+      getWidth: 9,
+      widthUnits: 'pixels',
+      opacity: 0.10 + 0.14 * pulse,
+      capRounded: true, jointRounded: true,
+    }));
+    const dashExt = deck.PathStyleExtension ? [new deck.PathStyleExtension({ dash: true })] : [];
+    layers.push(new deck.PathLayer({
+      id: 'work-zone-dash',
+      data: workZoneData,
+      getPath: d => d.path,
+      getColor: [255, 200, 40],
+      getWidth: 2.5,
+      widthUnits: 'pixels',
+      opacity: 0.85,
+      ...(dashExt.length ? { getDashArray: [2, 3], dashJustified: true, extensions: dashExt } : {}),
+    }));
+  }
+  if (siteData.length) {
+    layers.push(new deck.ScatterplotLayer({
+      id: 'site-ring',
+      data: siteData,
+      getPosition: d => d.position,
+      getRadius: 120 + 160 * pulse,            // metres, expanding ring
+      radiusUnits: 'meters',
+      stroked: true, filled: true,
+      getFillColor: [255, 170, 0, Math.round(40 * (1 - pulse))],
+      getLineColor: [255, 190, 40, Math.round(220 * (1 - pulse) + 35)],
+      lineWidthUnits: 'pixels', getLineWidth: 2,
+    }));
+  }
+  return layers;
 }
 
 function makeHoloCarLayer(trips, currentTime, realTs) {
@@ -234,7 +289,8 @@ function makeHoloCarLayer(trips, currentTime, realTs) {
     getIcon: () => 'car',
     getPosition: d => d.position,
     getAngle: d => d.angle,
-    getSize: 11,
+    getColor: d => carColor(d.slow),
+    getSize: d => (d.slow > 1.5 ? 13 : 11),      // jammed cars read slightly larger
     sizeUnits: 'pixels',
     sizeMinPixels: 7,
     billboard: false,                 // lie flat on the map, rotate with heading
@@ -264,6 +320,7 @@ function animate(realTs) {
     deckGL.setProps({ layers: [
       makePathLayer(pathData),
       makeTripsLayer(tripData, animTime),
+      ...makeWorkZoneLayers(realTs),
       makeHoloCarLayer(tripData, animTime, realTs),
     ] });
   }
@@ -316,7 +373,10 @@ async function fetchEdgeIndex() {
     if (!r.ok) return;
     const { edges } = await r.json();
     edges.forEach(e => {
-      edgeIndex[e.edge_id] = [[e.lon0, e.lat0], [e.lon1, e.lat1]];
+      // Prefer the full curved road shape; fall back to a straight segment.
+      edgeIndex[e.edge_id] = (Array.isArray(e.coords) && e.coords.length >= 2)
+        ? e.coords
+        : [[e.lon0, e.lat0], [e.lon1, e.lat1]];
       edgeNames[e.edge_id] = Array.isArray(e.name) ? e.name.join(' / ') : (e.name || '');
     });
     console.info(`[I-Grid] edge index loaded: ${edges.length} edges`);
@@ -341,6 +401,11 @@ function updateLayers(data, mode) {
 
   // TripsLayer
   tripData = buildTripData(trajs);
+
+  // Work zone (only drawn in Scenario mode, but built once per result)
+  workZoneData = (data.closed_edge_ids || [])
+    .map(id => edgeIndex[id]).filter(Boolean).map(path => ({ path }));
+  siteData = data.site ? [{ position: [data.site.lon, data.site.lat] }] : [];
 
   // PathLayer — use edgeIndex from /graph/edges if available;
   // fall back to trajectory segment density if not yet loaded.
@@ -478,37 +543,146 @@ function initTabs() {
 }
 
 /* ── Site-location pin ─────────────────────────────────────────── */
-/* ── Preset: Renaissance Center demolition ─────────────────────────
- * Planning-level ASSUMPTIONS, not official figures — every value stays
- * editable in the form so the user can test other occupancy/truck levels.
+/* ── Scenario presets: Detroit construction & demolition ───────────
+ * Every number here is an ILLUSTRATIVE planning ASSUMPTION, not an official
+ * project figure. Presets only fill the form; users can edit any value.
+ * Fields left out default to 0 / no closure.
  */
-const RENCEN_PRESET = {
-  lat: 42.3293, lon: -83.0398,           // Jefferson Ave & Beaubien St
-  description: 'Renaissance Center demolition: office towers removed, ' +
-               'debris hauled to I-375 / the Lodge, one Jefferson Ave lane closed',
-  units: 0, retail: 0, year: 2027,
-  demoSqft: 2000000,                     // assumed office floor area removed
-  demoOcc: 35,                           // assumed % occupied today
-  demoTrucks: 250,                       // assumed one-way haul trips per day
-  road: 'Jefferson Ave', lcStart: '2027-01-01', lcEnd: '2028-06-30', lanes: 1,
-};
+const PRESETS = [
+  {
+    id: 'rencen', icon: '🏙️', label: 'Renaissance Center demolition',
+    lat: 42.3293, lon: -83.0398,                    // Jefferson Ave & Beaubien St
+    description: 'Renaissance Center demolition: office towers removed, debris ' +
+                 'hauled to I-375 / the Lodge, Jefferson and Beaubien lanes closed',
+    year: 2027,
+    demoSqft: 2000000, demoOcc: 35, demoTrucks: 250,
+    closures: [
+      { road: 'Jefferson Ave', lanes: 1, extent: 800, start: '2027-01-01', end: '2028-06-30' },
+      { road: 'Beaubien St',   lanes: 1, extent: 500, start: '2027-01-01', end: '2028-06-30' },
+    ],
+  },
+  {
+    id: 'i375', icon: '🛣️', label: 'I-375 freeway → boulevard (construction)',
+    lat: 42.3375, lon: -83.0412,                    // I-375 between Jefferson & Gratiot
+    description: 'I-375 boulevard conversion, construction phase: freeway deck ' +
+                 'demolished, two lanes closed each way, Gratiot lane closed at the ramps',
+    year: 2027,
+    demoSqft: 0, demoTrucks: 120,                   // freeway structure, not office space
+    closures: [
+      { road: 'Walter P. Chrysler Freeway', lanes: 2, extent: 1200, start: '2027-03-01', end: '2028-11-30' },
+      { road: 'Gratiot Ave',                lanes: 1, extent: 400,  start: '2027-03-01', end: '2028-11-30' },
+    ],
+  },
+  {
+    id: 'hudsons', icon: '🏢', label: "Hudson's site tower (full occupancy)",
+    lat: 42.3339, lon: -83.0470,                    // Woodward & Grand River
+    description: "Hudson's site on Woodward fully occupied: offices, residences and " +
+                 'retail; final fit-out keeps a Woodward and a Grand River lane closed',
+    year: 2027,
+    units: 100, retail: 60000, office: 400000, demoTrucks: 40,
+    closures: [
+      { road: 'Woodward Ave',    lanes: 1, extent: 300, start: '2026-11-01', end: '2027-05-31' },
+      { road: 'Grand River Ave', lanes: 1, extent: 300, start: '2026-11-01', end: '2027-05-31' },
+    ],
+  },
+  {
+    id: 'mcentral', icon: '🚉', label: 'Michigan Central campus build-out',
+    lat: 42.3289, lon: -83.0776,                    // Corktown, Vernor & 15th St
+    description: 'Michigan Central campus build-out: obsolete warehouses demolished ' +
+                 'for new offices and labs; Michigan Ave and Vernor lanes closed',
+    year: 2028,
+    retail: 20000, office: 1000000,
+    demoSqft: 150000, demoOcc: 0, demoTrucks: 80,   // vacant buildings: no trips removed
+    closures: [
+      { road: 'Michigan Ave',   lanes: 1, extent: 600, start: '2027-05-01', end: '2028-09-30' },
+      { road: 'Vernor Highway', lanes: 1, extent: 400, start: '2027-05-01', end: '2028-09-30' },
+    ],
+  },
+  {
+    id: 'district', icon: '🏟️', label: 'District Detroit mixed-use infill',
+    lat: 42.3437, lon: -83.0601,                    // Cass Ave near Temple St
+    description: 'District Detroit infill near Cass & Temple: vacant buildings ' +
+                 'demolished for apartments, offices and retail; Cass and Temple lanes closed',
+    year: 2028,
+    units: 700, retail: 30000, office: 200000,
+    demoSqft: 80000, demoOcc: 0, demoTrucks: 60,
+    closures: [
+      { road: 'Cass Ave',  lanes: 1, extent: 500, start: '2027-04-01', end: '2028-08-31' },
+      { road: 'Temple St', lanes: 1, extent: 300, start: '2027-04-01', end: '2028-08-31' },
+    ],
+  },
+];
 
-function applyRenCenPreset() {
-  const p = RENCEN_PRESET;
+/* ── Lane-closure rows ─────────────────────────────────────────── */
+function addClosureRow(c = {}) {
+  const list = document.getElementById('closure-list');
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'closure-row';
+  row.innerHTML = `
+    <div class="lc-line">
+      <input class="lc-road" type="text" placeholder="Road, e.g. Woodward Ave" aria-label="Road name" />
+      <button type="button" class="lc-remove" title="Remove closure">✕</button>
+    </div>
+    <div class="lc-grid">
+      <label>Lanes closed <input class="lc-lanes" type="number" min="1" max="4" value="1" /></label>
+      <label>Within (m) <input class="lc-extent" type="number" min="50" step="50" value="800" /></label>
+      <label>Start <input class="lc-start" type="date" value="2027-03-01" /></label>
+      <label>End <input class="lc-end" type="date" value="2027-09-01" /></label>
+    </div>`;
+  row.querySelector('.lc-road').value   = c.road   || '';
+  row.querySelector('.lc-lanes').value  = c.lanes  || 1;
+  row.querySelector('.lc-extent').value = c.extent || 800;
+  row.querySelector('.lc-start').value  = c.start  || '2027-03-01';
+  row.querySelector('.lc-end').value    = c.end    || '2027-09-01';
+  row.querySelector('.lc-remove').addEventListener('click', () => row.remove());
+  list.appendChild(row);
+}
+
+function setClosureRows(closures) {
+  const list = document.getElementById('closure-list');
+  if (list) list.innerHTML = '';
+  (closures || []).forEach(addClosureRow);
+}
+
+function collectClosures() {
+  return [...document.querySelectorAll('#closure-list .closure-row')].map(row => ({
+    road_name:    row.querySelector('.lc-road').value.trim(),
+    lanes_closed: parseInt(row.querySelector('.lc-lanes').value, 10) || 1,
+    extent_m:     parseFloat(row.querySelector('.lc-extent').value) || 800,
+    start_date:   row.querySelector('.lc-start').value,
+    end_date:     row.querySelector('.lc-end').value,
+  })).filter(c => c.road_name);
+}
+
+function applyPreset(p) {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
   set('sc-description', p.description);
-  set('sc-units', p.units);
-  set('sc-retail', p.retail);
-  set('sc-year', p.year);
-  set('sc-demo-sqft', p.demoSqft);
-  set('sc-demo-occ', p.demoOcc);
-  set('sc-demo-trucks', p.demoTrucks);
-  set('sc-road', p.road);
-  set('sc-lc-start', p.lcStart);
-  set('sc-lc-end', p.lcEnd);
-  set('sc-lanes-closed', p.lanes);
+  set('sc-units', p.units || 0);
+  set('sc-retail', p.retail || 0);
+  set('sc-office', p.office || 0);
+  set('sc-year', p.year || 2028);
+  set('sc-demo-sqft', p.demoSqft || 0);
+  set('sc-demo-occ', p.demoOcc ?? 100);
+  set('sc-demo-trucks', p.demoTrucks || 0);
+  setClosureRows(p.closures);
   setSiteLocation(p.lat, p.lon);
   if (mapRef) mapRef.flyTo({ center: [p.lon, p.lat], zoom: 14.5 });
+  document.querySelectorAll('.preset-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.preset === p.id));
+}
+
+function renderPresets() {
+  const box = document.getElementById('preset-list');
+  if (!box) return;
+  box.innerHTML = PRESETS.map(p => `
+    <button type="button" class="preset-btn" data-preset="${p.id}">
+      ${p.icon} ${escapeHtml(p.label)}
+    </button>`).join('');
+  box.querySelectorAll('.preset-btn').forEach(btn => btn.addEventListener('click', () => {
+    const p = PRESETS.find(x => x.id === btn.dataset.preset);
+    if (p) applyPreset(p);
+  }));
 }
 
 function setSiteLocation(lat, lon) {
@@ -560,11 +734,8 @@ async function runScenario() {
   const description  = document.getElementById('sc-description').value.trim();
   const housingUnits = parseInt(document.getElementById('sc-units').value, 10)   || 0;
   const retailSqft   = parseFloat(document.getElementById('sc-retail').value)    || 0;
+  const officeSqft   = parseFloat(document.getElementById('sc-office').value)    || 0;
   const openingYear  = parseInt(document.getElementById('sc-year').value, 10)    || 2028;
-  const roadName     = document.getElementById('sc-road').value.trim();
-  const lcStart      = document.getElementById('sc-lc-start').value;
-  const lcEnd        = document.getElementById('sc-lc-end').value;
-  const lanesClosed  = parseInt(document.getElementById('sc-lanes-closed').value, 10) || 1;
   const demoSqft     = parseFloat(document.getElementById('sc-demo-sqft').value)   || 0;
   const demoOccPct   = parseFloat(document.getElementById('sc-demo-occ').value);
   const demoTrucks   = parseInt(document.getElementById('sc-demo-trucks').value, 10) || 0;
@@ -576,17 +747,13 @@ async function runScenario() {
     description,
     housing_units: housingUnits,
     retail_sqft:   retailSqft,
+    office_sqft:   officeSqft,
     opening_year:  openingYear,
     demolished_office_sqft:         demoSqft,
     existing_occupancy:             Number.isFinite(demoOccPct)
                                       ? Math.min(Math.max(demoOccPct, 0), 100) / 100 : 1,
     demolition_truck_trips_per_day: demoTrucks,
-    lane_closures: roadName ? [{
-      road_name:    roadName,
-      start_date:   lcStart,
-      end_date:     lcEnd,
-      lanes_closed: lanesClosed,
-    }] : [],
+    lane_closures: collectClosures(),
   };
 
   // ── Set running state
@@ -750,8 +917,9 @@ function init() {
   const runBtn = document.getElementById('run-btn');
   if (runBtn) runBtn.addEventListener('click', runScenario);
 
-  const presetBtn = document.getElementById('preset-rencen');
-  if (presetBtn) presetBtn.addEventListener('click', applyRenCenPreset);
+  renderPresets();
+  const addBtn = document.getElementById('add-closure');
+  if (addBtn) addBtn.addEventListener('click', () => addClosureRow());
 
   // ── Fetch edge geometries (once) and start polling
   fetchEdgeIndex();

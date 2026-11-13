@@ -97,6 +97,7 @@ TRUCK_PCE = 2.5                # one heavy haul truck ≈ 2.5 passenger cars of 
 TRUCK_PEAK_FRACTION = 0.10     # haul trips spread over a ~10-hour work shift
 TRUCK_MIN_DISTANCE_M = 800.0   # trucks head for freeway nodes at least this far away
 TRUCK_FREEWAY_NODES = 6
+TRAJ_POINT_SPACING_M = 40.0    # min spacing of curve points in vehicle paths (payload size)
 IMPACT_RADIUS_M = 2000.0       # "biggest increases" list only covers streets this close
 
 
@@ -163,7 +164,10 @@ def run_simulation(
         lane_closures=None,
     )
     baseline_edges = _edge_metrics(G, baseline_vols, _caps_base)
-    baseline_trajs = _build_trajectories(baseline_paths, G, TRAJECTORY_SAMPLE_SIZE)
+    baseline_trajs = _build_trajectories(
+        baseline_paths, G, TRAJECTORY_SAMPLE_SIZE,
+        edge_times=_congested_times(G, baseline_vols, _caps_base),
+    )
     logger.info("[%s] Baseline done — max V/C=%.3f, %d trajectories",
                 scenario_id,
                 max((e.vc_ratio for e in baseline_edges), default=0.0),
@@ -202,9 +206,13 @@ def run_simulation(
         G, scenario_od,
         extra_origins=dev_origins,
         lane_closures=scenario.lane_closures,
+        site=(scenario.location_lat, scenario.location_lon),
     )
     scenario_edges = _edge_metrics(G, scenario_vols, _caps_scen)
-    scenario_trajs = _build_trajectories(scenario_paths, G, TRAJECTORY_SAMPLE_SIZE)
+    scenario_trajs = _build_trajectories(
+        scenario_paths, G, TRAJECTORY_SAMPLE_SIZE,
+        edge_times=_congested_times(G, scenario_vols, _caps_scen),
+    )
     logger.info("[%s] Scenario done — max V/C=%.3f, %d trajectories",
                 scenario_id,
                 max((e.vc_ratio for e in scenario_edges), default=0.0),
@@ -226,11 +234,20 @@ def run_simulation(
             # Drop the "Development adds ~0 daily trips (0 in peak hour)." clause.
             metrics.description = re.sub(r"^Development adds ~0 daily trips \(0 in peak hour\)\. ",
                                          "", metrics.description)
-        metrics.description = (
-            f"Demolition removes ~{removed_daily:,} daily trips from the existing "
-            f"building and adds {truck_daily:,} haul-truck trips per day "
-            f"(≈{TRUCK_PCE:g} cars each). " + metrics.description
-        )
+        parts = []
+        if removed_daily:
+            parts.append(f"Demolition removes ~{removed_daily:,} daily trips from the existing building.")
+        if truck_daily:
+            parts.append(f"Construction adds {truck_daily:,} haul-truck trips per day "
+                         f"(≈{TRUCK_PCE:g} cars each).")
+        metrics.description = " ".join(parts + [metrics.description])
+
+    # Segments whose capacity the lane closures reduced (drawn as a work zone).
+    closed_edge_ids = [
+        f"{u}-{v}-{k}"
+        for (u, v, k), cap in _caps_scen.items()
+        if cap < _caps_base.get((u, v, k), cap) - 1e-6
+    ]
 
     return SimulationResult(
         scenario_id=scenario_id,
@@ -240,6 +257,8 @@ def run_simulation(
         baseline_trajectories=baseline_trajs,
         scenario_trajectories=scenario_trajs,
         metrics=metrics,
+        closed_edge_ids=closed_edge_ids,
+        site={"lat": scenario.location_lat, "lon": scenario.location_lon},
     )
 
 
@@ -335,6 +354,7 @@ def _iterative_assignment(
     *,
     extra_origins: list[Any] | None,
     lane_closures: list[Any] | None,
+    site: tuple[float, float] | None = None,
 ) -> tuple[
     dict[tuple[Any, Any, int], float],   # volumes
     list[list[Any]],                      # paths
@@ -356,7 +376,7 @@ def _iterative_assignment(
     for u, v, k, data in G.edges(keys=True, data=True):
         cap = float(data.get("capacity", 3600.0))
         if lane_closures:
-            cap = _apply_closures(data, cap, lane_closures)
+            cap = _apply_closures(data, cap, lane_closures, G=G, u=u, v=v, site=site)
         edge_cap[(u, v, k)] = max(cap, 1.0)
 
     # Free-flow travel times (never mutated; BPR uses these as t₀)
@@ -507,12 +527,25 @@ def _apply_closures(
     data: dict[str, Any],
     base_cap: float,
     lane_closures: list[Any],
+    *,
+    G: nx.MultiDiGraph | None = None,
+    u: Any = None,
+    v: Any = None,
+    site: tuple[float, float] | None = None,
 ) -> float:
     """
     Reduce capacity on edges whose OSM 'name' matches a lane closure.
     capacity × max(1, lanes − lanes_closed) / lanes
     Matching is case-insensitive with suffix normalisation.
+
+    When *site* is given, only segments within the closure's ``extent_m`` of
+    the site are affected: a work zone closes part of a road, not all of it.
     """
+    dist_to_site = None
+    if site is not None and G is not None and u is not None and v is not None:
+        mid_lat = (G.nodes[u]["y"] + G.nodes[v]["y"]) / 2
+        mid_lon = (G.nodes[u]["x"] + G.nodes[v]["x"]) / 2
+        dist_to_site = _haversine_m(mid_lat, mid_lon, site[0], site[1])
     raw_name = data.get("name", "")
     if isinstance(raw_name, list):
         raw_name = raw_name[0] if raw_name else ""
@@ -523,6 +556,9 @@ def _apply_closures(
     for lc in lane_closures:
         lc_norm = _normalize_road_name(lc.road_name)
         if lc_norm and (lc_norm in edge_norm or edge_norm in lc_norm):
+            extent = float(getattr(lc, "extent_m", 800.0) or 800.0)
+            if dist_to_site is not None and dist_to_site > extent:
+                continue
             lanes = max(1, int(data.get("lanes_count", 2)))
             remaining = max(1, lanes - lc.lanes_closed)
             return base_cap * remaining / lanes
@@ -648,7 +684,9 @@ def _added_daily_trips(scenario: Any) -> int:
     """ITE planning-level trip-generation rates (approximate)."""
     apt = scenario.housing_units * TRIPS_PER_APARTMENT_UNIT_DAY
     grocery = (scenario.retail_sqft / 1000.0) * TRIPS_PER_1000_SQFT_GROCERY_DAY
-    return int(apt + grocery)
+    office = (float(getattr(scenario, "office_sqft", 0.0) or 0.0) / 1000.0
+              * TRIPS_PER_1000_SQFT_OFFICE_DAY)
+    return int(apt + grocery + office)
 
 
 # ---------------------------------------------------------------------------
@@ -678,10 +716,67 @@ def _edge_metrics(
 # Trajectory building
 # ---------------------------------------------------------------------------
 
+def edge_coords(G: nx.MultiDiGraph, u: Any, v: Any, data: dict[str, Any]) -> list[tuple[float, float]]:
+    """Road shape from u to v as (lon, lat) points, following its real curve.
+
+    Uses the OSM geometry when present (oriented to start at u); otherwise the
+    straight line between the two intersections.
+    """
+    start = (float(G.nodes[u]["x"]), float(G.nodes[u]["y"]))
+    end = (float(G.nodes[v]["x"]), float(G.nodes[v]["y"]))
+    geom = data.get("geometry")
+    coords = list(getattr(geom, "coords", []) or [])
+    if len(coords) < 2:
+        return [start, end]
+    coords = [(float(x), float(y)) for x, y, *_ in coords]
+    d_first = (coords[0][0] - start[0]) ** 2 + (coords[0][1] - start[1]) ** 2
+    d_last = (coords[-1][0] - start[0]) ** 2 + (coords[-1][1] - start[1]) ** 2
+    if d_last < d_first:
+        coords.reverse()
+    return coords
+
+
+def _edge_interior_points(
+    G: nx.MultiDiGraph, u: Any, v: Any, data: dict[str, Any],
+) -> list[tuple[tuple[float, float], float]]:
+    """Interior shape points of edge u→v with their 0–1 distance fraction."""
+    pts = edge_coords(G, u, v, data)
+    if len(pts) <= 2:
+        return []
+    seg = [_haversine_m(a[1], a[0], b[1], b[0]) for a, b in zip(pts, pts[1:])]
+    total = sum(seg) or 1.0
+    out, run, since_last = [], 0.0, 0.0
+    for i, (p, d) in enumerate(zip(pts[1:-1], seg)):
+        run += d
+        since_last += d
+        remaining = total - run
+        # Thin out shape points: keep one every ~TRAJ_POINT_SPACING_M, and
+        # never one right next to the end intersection.
+        if since_last >= TRAJ_POINT_SPACING_M and remaining >= TRAJ_POINT_SPACING_M / 2:
+            out.append(((round(p[0], 5), round(p[1], 5)), run / total))
+            since_last = 0.0
+    return out
+
+
+def _congested_times(
+    G: nx.MultiDiGraph,
+    volumes: dict[tuple[Any, Any, int], float],
+    caps: dict[tuple[Any, Any, int], float],
+) -> dict[tuple[Any, Any, int], float]:
+    """BPR travel time per edge at its final assigned volume (seconds)."""
+    times = {}
+    for u, v, k, data in G.edges(keys=True, data=True):
+        t0 = float(data.get("travel_time", 30.0))
+        cap = caps.get((u, v, k), float(data.get("capacity", 3600.0)))
+        times[(u, v, k)] = bpr_travel_time(t0, volumes.get((u, v, k), 0.0), cap)
+    return times
+
+
 def _build_trajectories(
     paths: list[list[Any]],
     G: nx.MultiDiGraph,
     sample_size: int,
+    edge_times: dict[tuple[Any, Any, int], float] | None = None,
 ) -> list[VehicleTrajectory]:
     """
     Sample *sample_size* paths and convert each to a VehicleTrajectory with
@@ -704,15 +799,33 @@ def _build_trajectories(
         for i, node in enumerate(path):
             nd = G.nodes[node]
             waypoints.append(Waypoint(
-                lon=float(nd.get("x", 0.0)),
-                lat=float(nd.get("y", 0.0)),
+                lon=round(float(nd.get("x", 0.0)), 5),
+                lat=round(float(nd.get("y", 0.0)), 5),
                 timestamp=round(t, 1),
             ))
             if i < len(path) - 1:
                 nxt = path[i + 1]
                 edge_data = G.get_edge_data(node, nxt)
                 if edge_data:
-                    best_t = min(float(d.get("travel_time", 30.0)) for d in edge_data.values())
+                    # Vehicles move at CONGESTED speed (BPR time at the assigned
+                    # volume), so they visibly slow down where roads are jammed.
+                    def _time(item):
+                        k, d = item
+                        if edge_times is not None and (node, nxt, k) in edge_times:
+                            return edge_times[(node, nxt, k)]
+                        return float(d.get("travel_time", 30.0))
+                    best_k, best = min(edge_data.items(), key=_time)
+                    best_t = _time((best_k, best))
+                    t_free = float(best.get("travel_time", 30.0)) or 1.0
+                    slow = round(max(1.0, best_t / t_free), 2)
+                    waypoints[-1].slow = slow          # segment leaving this node
+                    # Follow the road's real curve: add its interior shape
+                    # points, timed by distance along the edge.
+                    for (lon, lat), frac in _edge_interior_points(G, node, nxt, best):
+                        waypoints.append(Waypoint(
+                            lon=lon, lat=lat, timestamp=round(t + best_t * frac, 1),
+                            slow=slow,
+                        ))
                 else:
                     best_t = 30.0
                 t += best_t

@@ -154,12 +154,10 @@
         <!-- Presets -->
         <div class="card">
           <h3>Presets</h3>
-          <button id="preset-rencen" type="button" class="preset-btn">
-            🏙️ Renaissance Center demolition
-          </button>
-          <p style="margin:8px 0 0;font-size:11px;color:var(--muted);">
-            Fills in planning assumptions you can edit: floor area, occupancy,
-            haul trucks and a Jefferson Ave lane closure.
+          <div id="preset-list" class="preset-list"><!-- filled by app.js --></div>
+          <p id="preset-note" style="margin:8px 0 0;font-size:11px;color:var(--muted);">
+            Each preset fills in illustrative planning assumptions — not official
+            project figures. Every value stays editable.
           </p>
         </div>
 
@@ -185,6 +183,10 @@
               <label for="sc-retail">Retail sq ft</label>
               <input id="sc-retail" type="number" min="0" value="0" placeholder="0" />
             </div>
+          </div>
+          <div class="field" style="margin-top:8px;">
+            <label for="sc-office">New office sq ft</label>
+            <input id="sc-office" type="number" min="0" value="0" placeholder="0" />
           </div>
           <div class="field" style="margin-top:8px;">
             <label for="sc-year">Opening year</label>
@@ -215,27 +217,16 @@
           </p>
         </div>
 
-        <!-- Lane closure -->
+        <!-- Lane closures (one row per work zone) -->
         <div class="card">
-          <h3>Lane Closure (optional)</h3>
-          <div class="field">
-            <label for="sc-road">Road name</label>
-            <input id="sc-road" type="text" placeholder="e.g. Woodward Ave" />
-          </div>
-          <div class="field-row" style="margin-top:8px;">
-            <div class="field">
-              <label for="sc-lc-start">Start date</label>
-              <input id="sc-lc-start" type="date" value="2027-03-01" />
-            </div>
-            <div class="field">
-              <label for="sc-lc-end">End date</label>
-              <input id="sc-lc-end" type="date" value="2027-09-01" />
-            </div>
-          </div>
-          <div class="field" style="margin-top:8px;">
-            <label for="sc-lanes-closed">Lanes closed</label>
-            <input id="sc-lanes-closed" type="number" min="1" max="4" value="1" />
-          </div>
+          <h3>Lane Closures (optional)</h3>
+          <div id="closure-list" class="closure-list"><!-- rows added by app.js --></div>
+          <button id="add-closure" type="button" class="preset-btn" style="margin-top:8px;">
+            ＋ Add lane closure
+          </button>
+          <p style="margin:8px 0 0;font-size:11px;color:var(--muted);">
+            Each closure only affects that road within the given distance of the site.
+          </p>
         </div>
 
         <!-- Site location -->
@@ -267,14 +258,22 @@
     <div id="status-bar">
       <div id="status-dot" class="ok"></div>
       <span id="status-text">Waiting for data…</span>
-      <div id="legend">
+      <div id="legend" title="Car colour shows speed; amber dashes mark closed lanes">
         <span class="legend-seg">
           <span class="legend-swatch" style="background:#00e5ff;"></span>
-          Vehicles
+          Free
         </span>
         <span class="legend-seg">
-          <span class="legend-swatch" style="background:#f85149;"></span>
-          Congested
+          <span class="legend-swatch" style="background:#ffe240;"></span>
+          Slowed
+        </span>
+        <span class="legend-seg">
+          <span class="legend-swatch" style="background:#ff5ae6;"></span>
+          Crawling
+        </span>
+        <span class="legend-seg">
+          <span class="legend-swatch" style="background:repeating-linear-gradient(90deg,#ffc828 0 4px,transparent 4px 7px);"></span>
+          Work zone
         </span>
       </div>
     </div>
