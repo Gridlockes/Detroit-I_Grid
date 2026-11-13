@@ -45,6 +45,12 @@ let pathData           = [];
 let tripData           = [];
 let edgeIndex          = {};   // edge_id → [[lon0,lat0],[lon1,lat1]]
 
+// New-scenario form state
+let siteLat            = null;
+let siteLon            = null;
+let siteMarker         = null;  // maplibregl.Marker instance
+let mapRef             = null;  // the MapLibre Map, set in init()
+
 /* ── Colour scale  (V/C → RGB) ────────────────────────────────── */
 function vcColor(vc) {
   // green [63,185,80] → amber [210,153,34] → red [248,81,73]
@@ -314,6 +320,173 @@ function setStatus(state, msg) {
   if (text) text.textContent = msg;
 }
 
+/* ── Tab switching ─────────────────────────────────────────────── */
+function initTabs() {
+  document.querySelectorAll('.panel-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      document.querySelectorAll('.panel-tab').forEach(t =>
+        t.classList.toggle('active', t.dataset.tab === target)
+      );
+      document.querySelectorAll('.tab-pane').forEach(p =>
+        p.classList.toggle('active', p.id === `tab-${target}`)
+      );
+    });
+  });
+}
+
+/* ── Site-location pin ─────────────────────────────────────────── */
+function setSiteLocation(lat, lon) {
+  siteLat = lat;
+  siteLon = lon;
+
+  // Update display
+  const display = document.getElementById('location-display');
+  const text    = document.getElementById('location-text');
+  if (display) display.classList.add('has-location');
+  if (text)    text.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+
+  // Drop / move the marker on the map
+  if (mapRef) {
+    if (siteMarker) {
+      siteMarker.setLngLat([lon, lat]);
+    } else {
+      // Custom element so it's styled without a Mapbox token
+      const el = document.createElement('div');
+      el.style.cssText = `
+        width:22px; height:22px;
+        background:#58a6ff; border:2px solid #fff;
+        border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+        box-shadow:0 2px 6px rgba(0,0,0,0.5);
+      `;
+      siteMarker = new maplibregl.Marker({ element: el, anchor: 'bottom-left' })
+        .setLngLat([lon, lat])
+        .addTo(mapRef);
+    }
+  }
+
+  // Enable the run button once a location is set
+  updateRunButton();
+}
+
+function updateRunButton() {
+  const btn = document.getElementById('run-btn');
+  if (!btn) return;
+  btn.disabled = (siteLat === null);
+}
+
+/* ── New-scenario submission ───────────────────────────────────── */
+async function runScenario() {
+  const btn      = document.getElementById('run-btn');
+  const errEl    = document.getElementById('run-error');
+  if (!btn || !errEl) return;
+
+  // Gather form values
+  const description  = document.getElementById('sc-description').value.trim();
+  const housingUnits = parseInt(document.getElementById('sc-units').value, 10)   || 0;
+  const retailSqft   = parseFloat(document.getElementById('sc-retail').value)    || 0;
+  const openingYear  = parseInt(document.getElementById('sc-year').value, 10)    || 2028;
+  const roadName     = document.getElementById('sc-road').value.trim();
+  const lcStart      = document.getElementById('sc-lc-start').value;
+  const lcEnd        = document.getElementById('sc-lc-end').value;
+  const lanesClosed  = parseInt(document.getElementById('sc-lanes-closed').value, 10) || 1;
+
+  // Build payload
+  const payload = {
+    location_lat:  siteLat,
+    location_lon:  siteLon,
+    description,
+    housing_units: housingUnits,
+    retail_sqft:   retailSqft,
+    opening_year:  openingYear,
+    lane_closures: roadName ? [{
+      road_name:    roadName,
+      start_date:   lcStart,
+      end_date:     lcEnd,
+      lanes_closed: lanesClosed,
+    }] : [],
+  };
+
+  // ── Set running state
+  btn.disabled = true;
+  btn.classList.add('running');
+  errEl.style.display = 'none';
+  setStatus('busy', 'Submitting scenario…');
+
+  try {
+    // 1. POST /scenario
+    const r1 = await fetch(`${API_BASE}/scenario`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    if (!r1.ok) {
+      const msg = await r1.text();
+      throw new Error(`POST /scenario: ${r1.status} ${msg}`);
+    }
+    const scenario = await r1.json();
+    const id = scenario.id;
+    setStatus('busy', `Scenario saved (${id.slice(0,8)}…)`);
+
+    // 2. POST /simulate/{id}
+    const r2 = await fetch(`${API_BASE}/simulate/${id}`, { method: 'POST' });
+    if (!r2.ok) {
+      const msg = await r2.text();
+      throw new Error(`POST /simulate: ${r2.status} ${msg}`);
+    }
+    setStatus('busy', 'Simulation running…');
+
+    // 3. Poll GET /results/{id} until complete (max 60 s)
+    const result = await pollResult(id, 60);
+
+    // 4. Apply and switch to Scenario mode
+    lastScenarioId = result.scenario_id;
+    resultData     = result;
+    applyResult(result);
+
+    switchToScenarioMode();
+    switchToResultsTab();
+    setStatus('ok', `Complete (${id.slice(0,8)}…)`);
+
+  } catch (err) {
+    errEl.textContent   = err.message;
+    errEl.style.display = 'block';
+    setStatus('err', 'Simulation failed');
+  } finally {
+    btn.classList.remove('running');
+    btn.disabled = (siteLat === null);
+  }
+}
+
+async function pollResult(id, timeoutSec) {
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 1500));
+    const r = await fetch(`${API_BASE}/results/${id}`);
+    if (!r.ok) continue;
+    const data = await r.json();
+    if (data.status === 'complete') return data;
+    if (data.status === 'error')    throw new Error('Simulation returned an error');
+  }
+  throw new Error('Simulation timed out after 60 s');
+}
+
+function switchToScenarioMode() {
+  currentMode = 'scenario';
+  document.querySelectorAll('#mode-toggle button').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === 'scenario')
+  );
+}
+
+function switchToResultsTab() {
+  document.querySelectorAll('.panel-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === 'results')
+  );
+  document.querySelectorAll('.tab-pane').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-results')
+  );
+}
+
 /* ── Init ──────────────────────────────────────────────────────── */
 function init() {
   // Parse ?api= override for CORS dev usage
@@ -328,6 +501,7 @@ function init() {
     zoom:   MAP_ZOOM,
     antialias: true,
   });
+  mapRef = map;
 
   // ── deck.gl overlay (deck = window.deck from the CDN UMD build)
   const deckOverlay = new deck.MapboxOverlay({ layers: [] });
@@ -341,10 +515,13 @@ function init() {
   // ── Kick off animation
   requestAnimationFrame(animate);
 
-  // ── Tooltip on hover (optional, nice-to-have)
-  map.on('mousemove', e => {
-    // Could show intersection info here
+  // ── Map click → set site location
+  map.on('click', e => {
+    setSiteLocation(e.lngLat.lat, e.lngLat.lng);
   });
+
+  // ── Tab switching
+  initTabs();
 
   // ── Mode toggle
   document.querySelectorAll('#mode-toggle button').forEach(btn => {
@@ -375,6 +552,10 @@ function init() {
       if (lbl) lbl.textContent = `${animSpeed}×`;
     });
   }
+
+  // ── Run simulation button
+  const runBtn = document.getElementById('run-btn');
+  if (runBtn) runBtn.addEventListener('click', runScenario);
 
   // ── Fetch edge geometries (once) and start polling
   fetchEdgeIndex();

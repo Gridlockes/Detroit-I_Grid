@@ -48,87 +48,175 @@
       <p>AI-powered development impact simulator</p>
     </div>
 
+    <!-- Tab bar -->
+    <div id="panel-tabs">
+      <button class="panel-tab active" data-tab="results">Results</button>
+      <button class="panel-tab"        data-tab="new-scenario">New Scenario</button>
+    </div>
+
     <div id="panel-body">
 
-      <!-- Mode toggle -->
-      <div class="card">
-        <h3>Simulation Mode</h3>
-        <div id="mode-toggle">
-          <button class="active" data-mode="baseline">Baseline</button>
-          <button data-mode="scenario">Scenario</button>
-        </div>
-      </div>
+      <!-- ══════════════════ RESULTS TAB ══════════════════ -->
+      <div id="tab-results" class="tab-pane active">
 
-      <!-- Animation controls -->
-      <div class="card">
-        <h3>Animation</h3>
-
-        <div id="slider-wrap">
-          <label>
-            <span>Peak hour time</span>
-            <span id="time-label">07:00</span>
-          </label>
-          <input id="time-slider" type="range" min="0" max="3600" value="0" step="1" />
+        <!-- Mode toggle -->
+        <div class="card">
+          <h3>Simulation Mode</h3>
+          <div id="mode-toggle">
+            <button class="active" data-mode="baseline">Baseline</button>
+            <button data-mode="scenario">Scenario</button>
+          </div>
         </div>
 
-        <div id="speed-wrap" style="margin-top:10px;">
-          <span>Speed</span>
-          <input id="speed-range" type="range" min="10" max="180" value="60" step="10" />
-          <span id="speed-label">60×</span>
-        </div>
-      </div>
+        <!-- Animation controls -->
+        <div class="card">
+          <h3>Animation</h3>
 
-      <!-- Impact metrics -->
-      <div class="card">
-        <h3>Impact Metrics</h3>
-        <div class="stat-row">
-          <span class="label">Added daily trips</span>
-          <span class="value neutral" id="stat-trips">—</span>
-        </div>
-        <div class="stat-row">
-          <span class="label">Peak-hour trips</span>
-          <span class="value neutral" id="stat-peak">—</span>
-        </div>
-        <div class="stat-row">
-          <span class="label">Delay change (VHD)</span>
-          <span class="value neutral" id="stat-delay">—</span>
-        </div>
-      </div>
+          <div id="slider-wrap">
+            <label>
+              <span>Peak hour time</span>
+              <span id="time-label">07:00</span>
+            </label>
+            <input id="time-slider" type="range" min="0" max="3600" value="0" step="1" />
+          </div>
 
-      <!-- Worst intersections -->
-      <div class="card">
-        <h3>Worst Intersections (V/C)</h3>
-        <ul id="worst-list">
-          <li class="intersection-row">
-            <span class="coords">Waiting for simulation…</span>
-          </li>
-        </ul>
-      </div>
-
-      <!-- Description from agent -->
-      <div class="card">
-        <h3>Agent Summary</h3>
-        <p id="metrics-desc" style="margin:0;font-size:12px;color:var(--muted);">
-          Submit a scenario via the watsonx Orchestrate chat or the API
-          to run the simulation.
-        </p>
-      </div>
-
-      <!-- V/C colour legend -->
-      <div class="card">
-        <h3>V/C Legend</h3>
-        <div style="display:flex;gap:0;height:10px;border-radius:5px;overflow:hidden;margin-bottom:6px;">
-          <div style="flex:1;background:#3fb950;"></div>
-          <div style="flex:1;background:#8cc83c;"></div>
-          <div style="flex:1;background:#d29922;"></div>
-          <div style="flex:1;background:#e86c3a;"></div>
-          <div style="flex:1;background:#f85149;"></div>
+          <div id="speed-wrap" style="margin-top:10px;">
+            <span>Speed</span>
+            <input id="speed-range" type="range" min="10" max="180" value="60" step="10" />
+            <span id="speed-label">60×</span>
+          </div>
         </div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);">
-          <span>Free flow (0)</span>
-          <span>Congested (≥1.0)</span>
+
+        <!-- Impact metrics -->
+        <div class="card">
+          <h3>Impact Metrics</h3>
+          <div class="stat-row">
+            <span class="label">Added daily trips</span>
+            <span class="value neutral" id="stat-trips">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Peak-hour trips</span>
+            <span class="value neutral" id="stat-peak">—</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Delay change (VHD)</span>
+            <span class="value neutral" id="stat-delay">—</span>
+          </div>
         </div>
-      </div>
+
+        <!-- Worst intersections -->
+        <div class="card">
+          <h3>Worst Intersections (V/C)</h3>
+          <ul id="worst-list">
+            <li class="intersection-row">
+              <span class="coords">Waiting for simulation…</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Description from agent -->
+        <div class="card">
+          <h3>Agent Summary</h3>
+          <p id="metrics-desc" style="margin:0;font-size:12px;color:var(--muted);">
+            Submit a scenario via the form or the watsonx Orchestrate chat.
+          </p>
+        </div>
+
+        <!-- V/C colour legend -->
+        <div class="card">
+          <h3>V/C Legend</h3>
+          <div style="display:flex;gap:0;height:10px;border-radius:5px;overflow:hidden;margin-bottom:6px;">
+            <div style="flex:1;background:#3fb950;"></div>
+            <div style="flex:1;background:#8cc83c;"></div>
+            <div style="flex:1;background:#d29922;"></div>
+            <div style="flex:1;background:#e86c3a;"></div>
+            <div style="flex:1;background:#f85149;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);">
+            <span>Free flow (0)</span>
+            <span>Congested (≥1.0)</span>
+          </div>
+        </div>
+
+      </div><!-- /tab-results -->
+
+      <!-- ══════════════════ NEW SCENARIO TAB ══════════════════ -->
+      <div id="tab-new-scenario" class="tab-pane">
+
+        <!-- Description -->
+        <div class="card">
+          <h3>Project Description</h3>
+          <div class="field">
+            <label for="sc-description">Description</label>
+            <textarea id="sc-description" rows="3"
+              placeholder="e.g. 600-unit apartment + grocery at Woodward &amp; Mack, opening 2028"></textarea>
+          </div>
+        </div>
+
+        <!-- Development programme -->
+        <div class="card">
+          <h3>Programme</h3>
+          <div class="field-row">
+            <div class="field">
+              <label for="sc-units">Housing units</label>
+              <input id="sc-units" type="number" min="0" value="0" placeholder="0" />
+            </div>
+            <div class="field">
+              <label for="sc-retail">Retail sq ft</label>
+              <input id="sc-retail" type="number" min="0" value="0" placeholder="0" />
+            </div>
+          </div>
+          <div class="field" style="margin-top:8px;">
+            <label for="sc-year">Opening year</label>
+            <input id="sc-year" type="number" min="2025" max="2050" value="2028" />
+          </div>
+        </div>
+
+        <!-- Lane closure -->
+        <div class="card">
+          <h3>Lane Closure (optional)</h3>
+          <div class="field">
+            <label for="sc-road">Road name</label>
+            <input id="sc-road" type="text" placeholder="e.g. Woodward Ave" />
+          </div>
+          <div class="field-row" style="margin-top:8px;">
+            <div class="field">
+              <label for="sc-lc-start">Start date</label>
+              <input id="sc-lc-start" type="date" value="2027-03-01" />
+            </div>
+            <div class="field">
+              <label for="sc-lc-end">End date</label>
+              <input id="sc-lc-end" type="date" value="2027-09-01" />
+            </div>
+          </div>
+          <div class="field" style="margin-top:8px;">
+            <label for="sc-lanes-closed">Lanes closed</label>
+            <input id="sc-lanes-closed" type="number" min="1" max="4" value="1" />
+          </div>
+        </div>
+
+        <!-- Site location -->
+        <div class="card">
+          <h3>Site Location</h3>
+          <p style="margin:0 0 8px;font-size:12px;color:var(--muted);">
+            Click anywhere on the map to drop a pin.
+          </p>
+          <div id="location-display">
+            <span id="location-pin-icon">📍</span>
+            <span id="location-text">No location set</span>
+          </div>
+        </div>
+
+        <!-- Run button -->
+        <button id="run-btn" disabled>
+          <div class="spinner"></div>
+          <span class="btn-label">Run</span> simulation
+        </button>
+
+        <!-- Error message area -->
+        <p id="run-error" style="margin:0;font-size:12px;color:var(--accent-red);display:none;"></p>
+
+      </div><!-- /tab-new-scenario -->
 
     </div><!-- /panel-body -->
 

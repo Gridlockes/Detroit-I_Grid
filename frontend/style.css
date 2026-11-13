@@ -245,3 +245,142 @@ a { color: var(--accent-blue); }
   height: 4px;
   border-radius: 2px;
 }
+
+/* ── Panel tabs ───────────────────────────────────────────────── */
+#panel-tabs {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-tab {
+  flex: 1;
+  padding: 9px 0;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.panel-tab.active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+}
+
+.panel-tab:hover:not(.active) { color: var(--text); }
+
+/* each tab's content pane */
+.tab-pane          { display: none; }
+.tab-pane.active   { display: flex; flex-direction: column; gap: 14px; }
+
+/* ── Form inputs ──────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.field input,
+.field textarea {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  resize: none;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.field input:focus,
+.field textarea:focus {
+  border-color: var(--accent-blue);
+}
+
+.field input::placeholder,
+.field textarea::placeholder { color: var(--muted); }
+
+/* row of two inputs side-by-side */
+.field-row {
+  display: flex;
+  gap: 8px;
+}
+.field-row .field { flex: 1; }
+
+/* location pill */
+#location-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface2);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: default;
+  transition: border-color 0.2s;
+}
+#location-display.has-location {
+  border-color: var(--accent-green);
+  border-style: solid;
+  color: var(--text);
+}
+#location-pin-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+/* ── Run button + spinner ─────────────────────────────────────── */
+#run-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 0;
+  background: var(--accent-blue);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#run-btn:hover:not(:disabled) { opacity: 0.85; }
+#run-btn:disabled              { opacity: 0.45; cursor: not-allowed; }
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: none;
+}
+#run-btn.running .spinner { display: block; }
+#run-btn.running .btn-label::after { content: 'ing…'; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Map cursor hint (while picking location) ─────────────────── */
+body.picking-location #map { cursor: crosshair !important; }
