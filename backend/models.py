@@ -42,6 +42,22 @@ class Scenario(BaseModel):
         default_factory=list,
         description="Temporary lane closures during construction",
     )
+    # --- Demolition -------------------------------------------------------
+    demolished_office_sqft: float = Field(
+        0.0, ge=0,
+        description=(
+            "Existing office floor area demolished at the site, in square feet. "
+            "Its trips are present in the baseline and removed in the scenario."
+        ),
+    )
+    existing_occupancy: float = Field(
+        1.0, ge=0, le=1,
+        description="Share (0-1) of the demolished building that is occupied today",
+    )
+    demolition_truck_trips_per_day: int = Field(
+        0, ge=0,
+        description="One-way debris-haul truck trips per workday during demolition",
+    )
 
 
 class ScenarioRecord(Scenario):
@@ -81,6 +97,11 @@ class SimulationMetrics(BaseModel):
     worst_intersections: list[dict[str, Any]]
     travel_time_change_pct: float
     description: str
+    removed_daily_trips: int = 0      # trips lost from the demolished building
+    truck_trips_per_day: int = 0      # demolition haul trucks (one-way trips)
+    # Streets whose load rises most vs. baseline:
+    # [{name, lat, lon, base_vc, scen_vc, delta}], largest delta first.
+    biggest_increases: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SimulationResult(BaseModel):

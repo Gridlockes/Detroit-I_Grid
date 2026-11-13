@@ -384,3 +384,21 @@ a { color: var(--accent-blue); }
 
 /* ── Map cursor hint (while picking location) ─────────────────── */
 body.picking-location #map { cursor: crosshair !important; }
+
+/* Preset scenario buttons */
+.preset-btn {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-blue, #58a6ff);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.preset-btn:hover { background: rgba(88, 166, 255, 0.12); }
+
+/* Clickable street rows in the impact list */
+.intersection-row.clickable { cursor: pointer; }
+.intersection-row.clickable:hover { background: rgba(88, 166, 255, 0.10); }

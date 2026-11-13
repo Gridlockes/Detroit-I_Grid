@@ -91,6 +91,14 @@ TRIPS_PER_APARTMENT_UNIT_DAY = 5.4
 TRIPS_PER_1000_SQFT_GROCERY_DAY = 100.0
 PEAK_HOUR_FRACTION = 0.10      # ~10 % of daily trips occur in the peak hour
 
+# Demolition (planning-level assumptions; shown to users as estimates).
+TRIPS_PER_1000_SQFT_OFFICE_DAY = 10.84  # ≈ ITE general office rate
+TRUCK_PCE = 2.5                # one heavy haul truck ≈ 2.5 passenger cars of capacity
+TRUCK_PEAK_FRACTION = 0.10     # haul trips spread over a ~10-hour work shift
+TRUCK_MIN_DISTANCE_M = 800.0   # trucks head for freeway nodes at least this far away
+TRUCK_FREEWAY_NODES = 6
+IMPACT_RADIUS_M = 2000.0       # "biggest increases" list only covers streets this close
+
 
 # ---------------------------------------------------------------------------
 # Haversine helper
@@ -134,9 +142,23 @@ def run_simulation(
     # --- Background OD matrix -----------------------------------------------
     background_od = _build_od_matrix(zones, TRIPS_PER_ZONE_PAIR)
 
+    # --- Site nodes (development + demolition trips start/end here) --------
+    dev_origins = _dev_extra_origins(
+        nodes, scenario.location_lat, scenario.location_lon, set(zones), G,
+    )
+
+    # --- Existing building at the site (baseline only) ----------------------
+    # Demolition removes these trips, so they appear in the baseline but
+    # not in the scenario.
+    removed_daily = _removed_daily_trips(scenario)
+    existing_od = _site_od(
+        dev_origins, zones, removed_daily * PEAK_HOUR_FRACTION,
+    )
+    baseline_od = _merge_od(background_od, existing_od)
+
     # --- Baseline assignment ------------------------------------------------
     baseline_vols, baseline_paths, _caps_base = _iterative_assignment(
-        G, background_od,
+        G, baseline_od,
         extra_origins=None,
         lane_closures=None,
     )
@@ -150,9 +172,6 @@ def run_simulation(
     # --- Development demand -------------------------------------------------
     added_daily = _added_daily_trips(scenario)
     added_peak = int(added_daily * PEAK_HOUR_FRACTION)
-    dev_origins = _dev_extra_origins(
-        nodes, scenario.location_lat, scenario.location_lon, set(zones), G,
-    )
     # dev OD weight: distribute added_peak trips equally across all
     # (dev_origin → zone_dest) pairs so total volume added = added_peak.
     n_dev_pairs = len(dev_origins) * len(zones)
@@ -168,6 +187,15 @@ def run_simulation(
     scenario_od: dict[tuple[Any, Any], float] = dict(background_od)
     for pair, w in dev_od.items():
         scenario_od[pair] = scenario_od.get(pair, 0.0) + w
+
+    # --- Demolition haul trucks (site <-> freeway), in passenger-car units ---
+    truck_daily = int(getattr(scenario, "demolition_truck_trips_per_day", 0) or 0)
+    if truck_daily > 0:
+        freeway = _freeway_nodes(G, scenario.location_lat, scenario.location_lon)
+        truck_od = _site_od(
+            dev_origins, freeway, truck_daily * TRUCK_PEAK_FRACTION * TRUCK_PCE,
+        )
+        scenario_od = _merge_od(scenario_od, truck_od)
 
     # --- Scenario assignment (lane closures applied) -------------------------
     scenario_vols, scenario_paths, _caps_scen = _iterative_assignment(
@@ -187,6 +215,22 @@ def run_simulation(
         G, scenario, baseline_vols, scenario_vols,
         _caps_base, _caps_scen, added_daily,
     )
+    metrics.biggest_increases = _biggest_increases(
+        G, baseline_vols, scenario_vols, _caps_base, _caps_scen,
+        site_lat=scenario.location_lat, site_lon=scenario.location_lon,
+    )
+    metrics.removed_daily_trips = removed_daily
+    metrics.truck_trips_per_day = truck_daily
+    if removed_daily or truck_daily:
+        if added_daily == 0:
+            # Drop the "Development adds ~0 daily trips (0 in peak hour)." clause.
+            metrics.description = re.sub(r"^Development adds ~0 daily trips \(0 in peak hour\)\. ",
+                                         "", metrics.description)
+        metrics.description = (
+            f"Demolition removes ~{removed_daily:,} daily trips from the existing "
+            f"building and adds {truck_daily:,} haul-truck trips per day "
+            f"(≈{TRUCK_PCE:g} cars each). " + metrics.description
+        )
 
     return SimulationResult(
         scenario_id=scenario_id,
@@ -488,6 +532,117 @@ def _apply_closures(
 # ---------------------------------------------------------------------------
 # Trip-generation rates
 # ---------------------------------------------------------------------------
+
+def _edge_street_name(data: dict[str, Any]) -> str:
+    name = data.get("name")
+    if isinstance(name, list):
+        name = name[0] if name else ""
+    name = str(name or "").strip()
+    # GraphML stores multi-name edges as "['A', 'B']"; keep the first name.
+    if name.startswith("[") and name.endswith("]"):
+        name = name.strip("[]").split(",")[0].strip().strip("'\"")
+    return name
+
+
+def _biggest_increases(
+    G: nx.MultiDiGraph,
+    baseline_vols: dict[tuple[Any, Any, int], float],
+    scenario_vols: dict[tuple[Any, Any, int], float],
+    baseline_caps: dict[tuple[Any, Any, int], float],
+    scenario_caps: dict[tuple[Any, Any, int], float],
+    top_n: int = 5,
+    *,
+    site_lat: float | None = None,
+    site_lon: float | None = None,
+    radius_m: float = IMPACT_RADIUS_M,
+) -> list[dict[str, Any]]:
+    """Named streets near the site whose V/C rises most from baseline to scenario.
+
+    Limited to *radius_m* around the site: far-away changes are mostly
+    route-switching noise between near-equal paths, not real impact.
+
+    For each street, take its single segment with the largest V/C increase,
+    so the list points at where the change is actually felt.
+    """
+    best: dict[str, dict[str, Any]] = {}
+    for u, v, k, data in G.edges(keys=True, data=True):
+        name = _edge_street_name(data)
+        if not name or name.lower() == "none":
+            continue
+        cap_b = baseline_caps.get((u, v, k), float(data.get("capacity", 3600.0)))
+        cap_s = scenario_caps.get((u, v, k), float(data.get("capacity", 3600.0)))
+        vc_b = baseline_vols.get((u, v, k), 0.0) / cap_b if cap_b > 0 else 0.0
+        vc_s = scenario_vols.get((u, v, k), 0.0) / cap_s if cap_s > 0 else 0.0
+        delta = vc_s - vc_b
+        if delta <= 0.005:
+            continue
+        mid_lat = (G.nodes[u]["y"] + G.nodes[v]["y"]) / 2
+        mid_lon = (G.nodes[u]["x"] + G.nodes[v]["x"]) / 2
+        if site_lat is not None and site_lon is not None and \
+                _haversine_m(mid_lat, mid_lon, site_lat, site_lon) > radius_m:
+            continue
+        if name not in best or delta > best[name]["delta"]:
+            best[name] = {
+                "name": name,
+                "lat": mid_lat,
+                "lon": mid_lon,
+                "base_vc": round(vc_b, 3),
+                "scen_vc": round(vc_s, 3),
+                "delta": round(delta, 3),
+            }
+    return sorted(best.values(), key=lambda r: r["delta"], reverse=True)[:top_n]
+
+
+def _removed_daily_trips(scenario: Any) -> int:
+    """Daily trips generated today by the building that will be demolished."""
+    sqft = float(getattr(scenario, "demolished_office_sqft", 0.0) or 0.0)
+    occ = float(getattr(scenario, "existing_occupancy", 1.0))
+    return int(sqft / 1000.0 * TRIPS_PER_1000_SQFT_OFFICE_DAY * occ)
+
+
+def _site_od(
+    site_nodes: list[Any],
+    other_nodes: list[Any],
+    peak_trips: float,
+) -> dict[tuple[Any, Any], float]:
+    """Spread *peak_trips* evenly, half leaving the site and half arriving."""
+    pairs = [(o, d) for o in site_nodes for d in other_nodes if o != d]
+    if peak_trips <= 0 or not pairs:
+        return {}
+    w = peak_trips / (2 * len(pairs))
+    od: dict[tuple[Any, Any], float] = defaultdict(float)
+    for s_node, other in pairs:
+        od[(s_node, other)] += w   # outbound
+        od[(other, s_node)] += w   # inbound
+    return dict(od)
+
+
+def _merge_od(
+    a: dict[tuple[Any, Any], float],
+    b: dict[tuple[Any, Any], float],
+) -> dict[tuple[Any, Any], float]:
+    merged = dict(a)
+    for pair, w in b.items():
+        merged[pair] = merged.get(pair, 0.0) + w
+    return merged
+
+
+def _freeway_nodes(G: nx.MultiDiGraph, site_lat: float, site_lon: float) -> list[Any]:
+    """Freeway/ramp nodes away from the site: where haul trucks enter and leave."""
+    found = set()
+    for u, v, data in G.edges(data=True):
+        hw = data.get("highway")
+        hw = hw[0] if isinstance(hw, list) else hw
+        if hw in ("motorway", "motorway_link"):
+            found.update((u, v))
+    # Haul trucks take the NEAREST ramps (e.g. I-375 / the Lodge downtown),
+    # skipping any too close to count as "leaving the site".
+    dist = {n: _haversine_m(G.nodes[n]["y"], G.nodes[n]["x"], site_lat, site_lon)
+            for n in found}
+    near = sorted((n for n in found if dist[n] >= TRUCK_MIN_DISTANCE_M),
+                  key=lambda n: (dist[n], str(n)))
+    return near[:TRUCK_FREEWAY_NODES]
+
 
 def _added_daily_trips(scenario: Any) -> int:
     """ITE planning-level trip-generation rates (approximate)."""

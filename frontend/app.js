@@ -44,6 +44,7 @@ let deckGL             = null;
 let pathData           = [];
 let tripData           = [];
 let edgeIndex          = {};   // edge_id → [[lon0,lat0],[lon1,lat1]]
+let edgeNames          = {};   // edge_id → OSM street name (for hover tooltip)
 
 // New-scenario form state
 let siteLat            = null;
@@ -132,18 +133,113 @@ function makePathLayer(data) {
 }
 
 function makeTripsLayer(data, currentTime) {
+  // Faint cyan light-streaks behind the hologram cars.
   return new deck.TripsLayer({
     id: 'trips',
     data,
     getPath:        d => d.path,
     getTimestamps:  d => d.path.map(p => p[2]),
-    getColor:       [253, 128, 93],
-    opacity:        0.6,
-    widthMinPixels: 2,
-    widthMaxPixels: 4,
+    getColor:       [0, 229, 255],
+    opacity:        0.22,
+    widthMinPixels: 1,
+    widthMaxPixels: 2,
     rounded:        true,
-    trailLength:    TRAIL_LENGTH_S,
+    trailLength:    TRAIL_LENGTH_S * 0.6,
     currentTime,
+  });
+}
+
+/* ── Low-res hologram car sprites ────────────────────────────────
+ * A tiny pixel-art car (16×8 px) drawn in cyan, with a dim 1-px halo and
+ * scan-lines, scaled up with nearest-neighbour filtering so it stays blocky.
+ * The sprite points east; IconLayer rotates it to each car's heading.
+ */
+const HOLO_CAR_PIXELS = [
+  '................',
+  '....XXXXXX......',
+  '...XWWXWWWX.....',
+  '.XXXXXXXXXXXXXX.',
+  'XXXXXXXXXXXXXXXH',
+  '.XXXXXXXXXXXXXX.',
+  '..OO.......OO...',
+  '................',
+];
+const HOLO_COLORS = {
+  X: [0, 229, 255, 235],    // body
+  W: [190, 255, 255, 255],  // windows
+  H: [255, 255, 255, 255],  // headlight
+  O: [0, 110, 130, 235],    // wheels
+};
+
+function makeHoloCarAtlas() {
+  const w = HOLO_CAR_PIXELS[0].length, h = HOLO_CAR_PIXELS.length;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  const lit = (x, y) => (HOLO_CAR_PIXELS[y] || '')[x] && HOLO_CAR_PIXELS[y][x] !== '.';
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let rgba = HOLO_COLORS[HOLO_CAR_PIXELS[y][x]];
+      if (!rgba && (lit(x - 1, y) || lit(x + 1, y) || lit(x, y - 1) || lit(x, y + 1))) {
+        rgba = [0, 229, 255, 70];               // halo glow around the body
+      }
+      if (!rgba) continue;
+      const scan = y % 2 === 1 ? 0.7 : 1.0;     // hologram scan-lines
+      const i = (y * w + x) * 4;
+      img.data[i] = rgba[0]; img.data[i + 1] = rgba[1]; img.data[i + 2] = rgba[2];
+      img.data[i + 3] = Math.round(rgba[3] * scan);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return {
+    atlas: canvas.toDataURL(),
+    mapping: { car: { x: 0, y: 0, width: w, height: h, mask: false } },
+  };
+}
+let holoAtlas = null;
+
+// Position + heading of every car on the road at time t (binary search per trip).
+function carPositionsAt(trips, t) {
+  const cars = [];
+  for (const trip of trips) {
+    const p = trip.path;
+    if (t < p[0][2] || t > p[p.length - 1][2]) continue;
+    let lo = 0, hi = p.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (p[mid][2] <= t) lo = mid; else hi = mid;
+    }
+    const a = p[lo], b = p[hi];
+    const span = b[2] - a[2];
+    const f = span > 0 ? (t - a[2]) / span : 0;
+    const lon = a[0] + (b[0] - a[0]) * f;
+    const lat = a[1] + (b[1] - a[1]) * f;
+    // Heading: counter-clockwise degrees from east, corrected for longitude scale.
+    const dx = (b[0] - a[0]) * Math.cos(lat * Math.PI / 180);
+    const dy = b[1] - a[1];
+    cars.push({ position: [lon, lat], angle: Math.atan2(dy, dx) * 180 / Math.PI });
+  }
+  return cars;
+}
+
+function makeHoloCarLayer(trips, currentTime, realTs) {
+  if (!holoAtlas) holoAtlas = makeHoloCarAtlas();
+  const flicker = 0.82 + 0.12 * Math.sin(realTs / 90) + 0.06 * Math.sin(realTs / 23);
+  return new deck.IconLayer({
+    id: 'holo-cars',
+    data: carPositionsAt(trips, currentTime),
+    iconAtlas: holoAtlas.atlas,
+    iconMapping: holoAtlas.mapping,
+    getIcon: () => 'car',
+    getPosition: d => d.position,
+    getAngle: d => d.angle,
+    getSize: 11,
+    sizeUnits: 'pixels',
+    sizeMinPixels: 7,
+    billboard: false,                 // lie flat on the map, rotate with heading
+    opacity: flicker,
+    textureParameters: { minFilter: 'nearest', magFilter: 'nearest' },  // keep it low-res
   });
 }
 
@@ -165,7 +261,11 @@ function animate(realTs) {
   }
 
   if (tripData.length > 0) {
-    deckGL.setProps({ layers: [makePathLayer(pathData), makeTripsLayer(tripData, animTime)] });
+    deckGL.setProps({ layers: [
+      makePathLayer(pathData),
+      makeTripsLayer(tripData, animTime),
+      makeHoloCarLayer(tripData, animTime, realTs),
+    ] });
   }
 
   requestAnimationFrame(animate);
@@ -217,6 +317,7 @@ async function fetchEdgeIndex() {
     const { edges } = await r.json();
     edges.forEach(e => {
       edgeIndex[e.edge_id] = [[e.lon0, e.lat0], [e.lon1, e.lat1]];
+      edgeNames[e.edge_id] = Array.isArray(e.name) ? e.name.join(' / ') : (e.name || '');
     });
     console.info(`[I-Grid] edge index loaded: ${edges.length} edges`);
   } catch (err) {
@@ -249,6 +350,8 @@ function updateLayers(data, mode) {
       if (!coords) return null;
       return {
         path:  coords,
+        name:  edgeNames[e.edge_id] || '',
+        vc:    e.vc_ratio,
         color: vcColor(e.vc_ratio),
         width: Math.max(1, Math.min(6, 1 + e.vc_ratio * 5)),
       };
@@ -285,6 +388,18 @@ function updateMetrics(m) {
   set('stat-trips',   m.added_daily_trips.toLocaleString());
   set('stat-peak',    Math.round(m.added_daily_trips * 0.10).toLocaleString());
 
+  // Demolition rows appear only when the scenario has a demolition; the
+  // "added trips" rows hide when nothing was added, so we never show a bare 0.
+  const removed = m.removed_daily_trips || 0;
+  const trucks  = m.truck_trips_per_day || 0;
+  const demo    = removed > 0 || trucks > 0;
+  showRow('row-removed', removed > 0);
+  showRow('row-trucks',  trucks > 0);
+  showRow('row-trips',   !demo || m.added_daily_trips > 0);
+  showRow('row-peak',    !demo || m.added_daily_trips > 0);
+  set('stat-removed', '−' + removed.toLocaleString());
+  set('stat-trucks',  '+' + trucks.toLocaleString());
+
   const pct = m.travel_time_change_pct;
   const el  = document.getElementById('stat-delay');
   if (el) {
@@ -292,8 +407,27 @@ function updateMetrics(m) {
     el.className    = 'value ' + (pct > 1 ? 'up' : pct < -1 ? 'down' : 'neutral');
   }
 
-  const list = document.getElementById('worst-list');
-  if (list && m.worst_intersections) {
+  // Streets that get worse because of THIS scenario (named, clickable).
+  // Falls back to the old worst-intersection list for older results.
+  const list  = document.getElementById('worst-list');
+  const title = document.getElementById('worst-title');
+  const pctTxt = vc => Math.round(vc * 100) + '%';
+  if (list && m.biggest_increases && m.biggest_increases.length) {
+    if (title) title.textContent = 'Biggest Increases Near Site (2 km)';
+    list.innerHTML = m.biggest_increases.slice(0, 5).map((w, i) => `
+      <li class="intersection-row clickable" data-lat="${w.lat}" data-lon="${w.lon}"
+          title="Zoom to ${escapeHtml(w.name)}">
+        <span class="coords">#${i+1} ${escapeHtml(w.name)}</span>
+        <span class="vc" style="color:${rgbStr(vcColor(w.scen_vc))}">
+          ${pctTxt(w.base_vc)} → ${pctTxt(w.scen_vc)}
+        </span>
+      </li>
+    `).join('');
+    list.querySelectorAll('li.clickable').forEach(li => li.addEventListener('click', () => {
+      if (mapRef) mapRef.flyTo({ center: [Number(li.dataset.lon), Number(li.dataset.lat)], zoom: 15.5 });
+    }));
+  } else if (list && m.worst_intersections) {
+    if (title) title.textContent = 'Most Congested Locations (V/C)';
     list.innerHTML = m.worst_intersections.slice(0, 5).map((w, i) => `
       <li class="intersection-row">
         <span class="coords">#${i+1} ${w.lat.toFixed(4)}, ${w.lon.toFixed(4)}</span>
@@ -307,6 +441,14 @@ function updateMetrics(m) {
 }
 
 function rgbStr([r,g,b]) { return `rgb(${r},${g},${b})`; }
+function showRow(id, visible) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = visible ? '' : 'none';
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 function set(id, text) {
   const el = document.getElementById(id);
   if (el) el.textContent = text;
@@ -336,6 +478,39 @@ function initTabs() {
 }
 
 /* ── Site-location pin ─────────────────────────────────────────── */
+/* ── Preset: Renaissance Center demolition ─────────────────────────
+ * Planning-level ASSUMPTIONS, not official figures — every value stays
+ * editable in the form so the user can test other occupancy/truck levels.
+ */
+const RENCEN_PRESET = {
+  lat: 42.3293, lon: -83.0398,           // Jefferson Ave & Beaubien St
+  description: 'Renaissance Center demolition: office towers removed, ' +
+               'debris hauled to I-375 / the Lodge, one Jefferson Ave lane closed',
+  units: 0, retail: 0, year: 2027,
+  demoSqft: 2000000,                     // assumed office floor area removed
+  demoOcc: 35,                           // assumed % occupied today
+  demoTrucks: 250,                       // assumed one-way haul trips per day
+  road: 'Jefferson Ave', lcStart: '2027-01-01', lcEnd: '2028-06-30', lanes: 1,
+};
+
+function applyRenCenPreset() {
+  const p = RENCEN_PRESET;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('sc-description', p.description);
+  set('sc-units', p.units);
+  set('sc-retail', p.retail);
+  set('sc-year', p.year);
+  set('sc-demo-sqft', p.demoSqft);
+  set('sc-demo-occ', p.demoOcc);
+  set('sc-demo-trucks', p.demoTrucks);
+  set('sc-road', p.road);
+  set('sc-lc-start', p.lcStart);
+  set('sc-lc-end', p.lcEnd);
+  set('sc-lanes-closed', p.lanes);
+  setSiteLocation(p.lat, p.lon);
+  if (mapRef) mapRef.flyTo({ center: [p.lon, p.lat], zoom: 14.5 });
+}
+
 function setSiteLocation(lat, lon) {
   siteLat = lat;
   siteLon = lon;
@@ -390,6 +565,9 @@ async function runScenario() {
   const lcStart      = document.getElementById('sc-lc-start').value;
   const lcEnd        = document.getElementById('sc-lc-end').value;
   const lanesClosed  = parseInt(document.getElementById('sc-lanes-closed').value, 10) || 1;
+  const demoSqft     = parseFloat(document.getElementById('sc-demo-sqft').value)   || 0;
+  const demoOccPct   = parseFloat(document.getElementById('sc-demo-occ').value);
+  const demoTrucks   = parseInt(document.getElementById('sc-demo-trucks').value, 10) || 0;
 
   // Build payload
   const payload = {
@@ -399,6 +577,10 @@ async function runScenario() {
     housing_units: housingUnits,
     retail_sqft:   retailSqft,
     opening_year:  openingYear,
+    demolished_office_sqft:         demoSqft,
+    existing_occupancy:             Number.isFinite(demoOccPct)
+                                      ? Math.min(Math.max(demoOccPct, 0), 100) / 100 : 1,
+    demolition_truck_trips_per_day: demoTrucks,
     lane_closures: roadName ? [{
       road_name:    roadName,
       start_date:   lcStart,
@@ -496,7 +678,8 @@ function init() {
   // ── MapLibre map
   const map = new maplibregl.Map({
     container: 'map',
-    style: 'https://basemaps.cartocdn.com/gl/dark-matter-nolabels-gl-style/style.json',
+    // Dark basemap WITH street labels (was the "nolabels" variant).
+    style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
     center: MAP_CENTER,
     zoom:   MAP_ZOOM,
     antialias: true,
@@ -504,7 +687,17 @@ function init() {
   mapRef = map;
 
   // ── deck.gl overlay (deck = window.deck from the CDN UMD build)
-  const deckOverlay = new deck.MapboxOverlay({ layers: [] });
+  // Hovering a road shows its street name and congestion level.
+  const deckOverlay = new deck.MapboxOverlay({
+    layers: [],
+    getTooltip: ({ object, layer }) => {
+      if (!object || !layer || layer.id !== 'congestion') return null;
+      const name = object.name || 'Unnamed road';
+      const vc   = typeof object.vc === 'number' ? object.vc : null;
+      const load = vc === null ? '' : ` — ${Math.round(vc * 100)}% of capacity`;
+      return { text: `${name}${load}` };
+    },
+  });
   map.addControl(deckOverlay);
 
   // deckGL is our thin wrapper; we keep window.deck as the layer namespace
@@ -556,6 +749,9 @@ function init() {
   // ── Run simulation button
   const runBtn = document.getElementById('run-btn');
   if (runBtn) runBtn.addEventListener('click', runScenario);
+
+  const presetBtn = document.getElementById('preset-rencen');
+  if (presetBtn) presetBtn.addEventListener('click', applyRenCenPreset);
 
   // ── Fetch edge geometries (once) and start polling
   fetchEdgeIndex();

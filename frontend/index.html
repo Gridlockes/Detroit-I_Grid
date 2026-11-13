@@ -90,13 +90,21 @@
         <!-- Impact metrics -->
         <div class="card">
           <h3>Impact Metrics</h3>
-          <div class="stat-row">
+          <div class="stat-row" id="row-trips">
             <span class="label">Added daily trips</span>
             <span class="value neutral" id="stat-trips">—</span>
           </div>
-          <div class="stat-row">
+          <div class="stat-row" id="row-peak">
             <span class="label">Peak-hour trips</span>
             <span class="value neutral" id="stat-peak">—</span>
+          </div>
+          <div class="stat-row" id="row-removed" style="display:none;">
+            <span class="label">Trips removed (demolition)</span>
+            <span class="value down" id="stat-removed">—</span>
+          </div>
+          <div class="stat-row" id="row-trucks" style="display:none;">
+            <span class="label">Haul truck trips / day</span>
+            <span class="value up" id="stat-trucks">—</span>
           </div>
           <div class="stat-row">
             <span class="label">Delay change (VHD)</span>
@@ -106,7 +114,7 @@
 
         <!-- Worst intersections -->
         <div class="card">
-          <h3>Worst Intersections (V/C)</h3>
+          <h3 id="worst-title">Biggest Increases Near Site</h3>
           <ul id="worst-list">
             <li class="intersection-row">
               <span class="coords">Waiting for simulation…</span>
@@ -143,6 +151,18 @@
       <!-- ══════════════════ NEW SCENARIO TAB ══════════════════ -->
       <div id="tab-new-scenario" class="tab-pane">
 
+        <!-- Presets -->
+        <div class="card">
+          <h3>Presets</h3>
+          <button id="preset-rencen" type="button" class="preset-btn">
+            🏙️ Renaissance Center demolition
+          </button>
+          <p style="margin:8px 0 0;font-size:11px;color:var(--muted);">
+            Fills in planning assumptions you can edit: floor area, occupancy,
+            haul trucks and a Jefferson Ave lane closure.
+          </p>
+        </div>
+
         <!-- Description -->
         <div class="card">
           <h3>Project Description</h3>
@@ -170,6 +190,29 @@
             <label for="sc-year">Opening year</label>
             <input id="sc-year" type="number" min="2025" max="2050" value="2028" />
           </div>
+        </div>
+
+        <!-- Demolition -->
+        <div class="card">
+          <h3>Demolition (optional)</h3>
+          <div class="field-row">
+            <div class="field">
+              <label for="sc-demo-sqft">Office sq ft removed</label>
+              <input id="sc-demo-sqft" type="number" min="0" value="0" placeholder="0" />
+            </div>
+            <div class="field">
+              <label for="sc-demo-occ">Occupied today (%)</label>
+              <input id="sc-demo-occ" type="number" min="0" max="100" value="100" />
+            </div>
+          </div>
+          <div class="field" style="margin-top:8px;">
+            <label for="sc-demo-trucks">Haul truck trips / day</label>
+            <input id="sc-demo-trucks" type="number" min="0" value="0" placeholder="0" />
+          </div>
+          <p style="margin:8px 0 0;font-size:11px;color:var(--muted);">
+            The building's current traffic is in the baseline and disappears in
+            the scenario; each truck counts as ≈2.5 cars.
+          </p>
         </div>
 
         <!-- Lane closure -->
@@ -226,7 +269,7 @@
       <span id="status-text">Waiting for data…</span>
       <div id="legend">
         <span class="legend-seg">
-          <span class="legend-swatch" style="background:#fd805d;"></span>
+          <span class="legend-swatch" style="background:#00e5ff;"></span>
           Vehicles
         </span>
         <span class="legend-seg">
